@@ -100,8 +100,7 @@ hpguppi_databuf += \
 
 hpguppi_threads += \
 		hpguppi_ata_fildisk_thread.c \
-		hpguppi_ata_blade_beamformer_thread.c \
-		hpguppi_ata_blade_obs_rawdisk_thread.c
+		hpguppi_ata_blade_beamformer_thread.c
 
 hpguppi_daq_la_LIBADD  += -lblade libbladeapi.la
 hpguppi_daq_la_LDFLAGS += -L"@BLADE_LIBDIR@" -Wl,-rpath,"@BLADE_LIBDIR@"

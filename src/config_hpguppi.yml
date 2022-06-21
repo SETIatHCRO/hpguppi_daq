@@ -65,7 +65,7 @@ ata:
       - hpguppi_ibvpkt_thread
       - hpguppi_ata_ibv_payload_order_thread
       - hpguppi_ata_blade_beamformer_thread
-      - hpguppi_ata_blade_obs_rawdisk_thread
+      - hpguppi_atasnap_obs_rawdisk_thread
     ibv_xgpu:
       - hpguppi_ibvpkt_thread
       - hpguppi_ata_ibv_payload_order_thread
