@@ -64,8 +64,16 @@ void hpguppi_fil_read_header_from_status(
 
   filheader->telescope_id = fb_telescope_id(raw_hdr.telescop); // Telescope ID
   filheader->tstart = raw_hdr.mjd;    // MJD
-  filheader->src_raj = 0.0;//raw_hdr.ra;    // RA in weird sigproc format
-  filheader->src_dej = 0.0;//raw_hdr.dec;   // declination in sigproc format
+  int ra_hh = (int)raw_hdr.ra;
+  double ra_mm = (raw_hdr.ra - ra_hh) * 60;
+  double ra_ss = (ra_mm - ((int)ra_mm)) * 60;
+  int dec_hh = (int)raw_hdr.dec;
+  double dec_mm = (raw_hdr.dec - dec_hh) * 60;
+  double dec_ss = (dec_mm - ((int)dec_mm)) * 60;
+
+  // sigproc format is the hh:mm:ss.ms format, without the colons
+  filheader->src_raj = (ra_hh * 100.0 + ((int) ra_mm)) * 100.00 + ra_ss;
+  filheader->src_dej = (dec_hh * 100.0 + ((int) dec_mm)) * 100.00 + dec_ss;
   filheader->nbits = raw_hdr.nbits;   // Bit size
   filheader->nbeams = raw_hdr.nbeams; // Nbeams
   filheader->ibeam = raw_hdr.beam_id; // Beam number
