@@ -365,6 +365,7 @@ static void *run(hashpipe_thread_args_t * args)
           uvh5_header->history = history;
           uvh5_header->phase_type = "phased";
           hgetr8(datablock_header, "RA_STR", &uvh5_header->phase_center_ra);
+          uvh5_header->phase_center_ra = uvh5_header->phase_center_ra * 360.0 / 24.0; // hours to degrees
           hgetr8(datablock_header, "DEC_STR", &uvh5_header->phase_center_dec);
           uvh5_header->phase_center_ra = calc_deg2rad(uvh5_header->phase_center_ra);
           uvh5_header->phase_center_dec = calc_deg2rad(uvh5_header->phase_center_dec);
@@ -483,6 +484,7 @@ static void *run(hashpipe_thread_args_t * args)
 
         if (1) { // Phased
           hgetr8(datablock_header, "RA_STR", &ra_rad);
+          ra_rad = ra_rad * 360.0 / 24.0; // hours to degrees
           hgetr8(datablock_header, "DEC_STR", &dec_rad);
           ra_rad = calc_deg2rad(ra_rad);
           dec_rad = calc_deg2rad(dec_rad);
