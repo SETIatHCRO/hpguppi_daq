@@ -1,0 +1,36 @@
+test:
+    prefix_exec: /work/hashpipe/src/
+    prefix_lib: /work/hpguppi_daq/build/.libs/
+    logdir: /work/logs
+    setup_commands:
+      - cpupower frequency-set -g performance
+      - /work/hashpipe/src/.libs/hashpipe_check_status $INSTANCE -C
+    hashpipe_keyfile: /work
+    environment:
+      - LD_LIBRARY_PATH=/work/hashpipe/src/.libs:/work/xGPU/src:/work/uvh5c99/build:/work/uvh5c99/build/subprojects/radiointerferometryc99
+    options:
+      - raw:
+        - HPCONFIG=RAW-FTP-RAW
+        - BACKEND=RAW
+      - PROJID=test
+      - RAWSTEM=/mnt/buf0/golden_synthesized_input
+      - PKTNCHAN=64
+      - PKTNTIME=16
+      - BINDPORT=0
+      - PKTSTART=0
+      - PKTSTOP=16384
+      - IBVPKTSZ=42,16,8192
+      - CUDADEV=$INSTANCE
+      - TELESCOP=UNITTEST
+    instance_numanode_bind: False
+    instance_datadir: [/mnt/buf0]
+    instance_bindhost: [eth01]
+    thread_mask_lengths:
+      hpguppi_ata_ibv_payload_order_thread:
+        8
+    subsystem_threads:
+      raw:
+        - guppiraw_ibv_packetize_thread
+        - hpguppi_ata_ibv_payload_order_thread
+        - hpguppi_atasnap_obs_rawdisk_thread
+    cpu_core_count_config: [12]
