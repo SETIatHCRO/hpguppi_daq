@@ -412,8 +412,10 @@ static void *run(hashpipe_thread_args_t * args)
 
       /* If we got packet 0, write data to disk */
       if (got_packet_0) {
-        // Overwrite the incomming datablock headers to be appropriate for output
-        hputi4(datablock_header, "NBEAMS", 1);
+        // Overwrite the incoming datablock headers to match that files are split
+        if(nbeams > 0) {
+          hputi4(datablock_header, "NBEAMS", 1);
+        }
         hputi4(datablock_header, "BLOCSIZE", file_blocksize);
         
         if(waiting != -1){
