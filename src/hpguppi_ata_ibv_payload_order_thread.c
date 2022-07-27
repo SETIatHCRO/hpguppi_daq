@@ -289,7 +289,8 @@ int debug_i=0, debug_j=0;
   char  PKT_OBS_FENG_flagged,
         PKT_OBS_SCHAN_flagged,
         PKT_OBS_NCHAN_flagged,
-        PKT_OBS_PKTNTIME_flagged;
+        PKT_OBS_PKTNTIME_flagged,
+        PKT_OBS_PKTIDX_flagged;
 
   // Variables for working with the input databuf
   struct hpguppi_pktbuf_info * pktbuf_info = hpguppi_pktbuf_info_ptr(dbin);
@@ -450,6 +451,7 @@ int debug_i=0, debug_j=0;
             PKT_OBS_SCHAN_flagged = 0;
             PKT_OBS_NCHAN_flagged = 0;
             PKT_OBS_PKTNTIME_flagged = 0;
+            PKT_OBS_PKTIDX_flagged = 0;
           }
         }
 
@@ -575,6 +577,7 @@ int debug_i=0, debug_j=0;
             flag_reinit_blks = 1;
             blk0_start_seq_num = pkt_info.pktidx;
             align_blk0_with_obsstart(&blk0_start_seq_num, obs_start_seq_num, obs_info.pktidx_per_block);
+
             // Should only happen when seeing first packet when obs_info is valid
             // warn in case it happens in other scenarios
             hashpipe_warn(thread_name,
@@ -636,7 +639,7 @@ int debug_i=0, debug_j=0;
           LATE_PKTIDX_flagged,\
           dest_feng_pktidx_offset\
         )\
-        firstprivate (p_u8pkt, obs_info, PKT_OBS_FENG_flagged, PKT_OBS_SCHAN_flagged, PKT_OBS_NCHAN_flagged, PKT_OBS_PKTNTIME_flagged)\
+        firstprivate (p_u8pkt, obs_info, PKT_OBS_FENG_flagged, PKT_OBS_SCHAN_flagged, PKT_OBS_NCHAN_flagged, PKT_OBS_PKTNTIME_flagged, PKT_OBS_PKTIDX_flagged)\
         reduction(min:obs_info_validity)\
         num_threads (ATA_IBV_FOR_PACKET_THREAD_COUNT)
         // The above `reduction` initialises each local variable as MAX>OBS_SEEMS_VALID, 
@@ -655,10 +658,10 @@ int debug_i=0, debug_j=0;
           ata_snap_parse_ibv_packet(p_pkt, &pkt_info);
 
         // Get packet index and absolute block number for packet
-        blk0_relative_pkt_seq_num = pkt_info.pktidx - blk0_start_seq_num;
+        pkt_info.pktidx = pkt_info.pktidx - blk0_start_seq_num;
 
         // Only copy packet data and count packet if its wblk_idx is valid
-        switch(check_pkt_observability_sans_idx(&obs_info, pkt_info.feng_id, pkt_info.pkt_schan)){
+        switch(check_pkt_observability_sans_idx(&obs_info, &pkt_info)){
           case PKT_OBS_OK:
 
             // Manage blocks based on pkt_blk_num
@@ -672,14 +675,14 @@ int debug_i=0, debug_j=0;
             // working block!
 
             // Get packet's block number relative to the first block's starting index.
-            pkt_blk_num = blk0_relative_pkt_seq_num / obs_info.pktidx_per_block;
+            pkt_blk_num = pkt_info.pktidx / obs_info.pktidx_per_block;
             wblk_idx = pkt_blk_num - wblk[0].block_num;
 
             if(0 <= wblk_idx && wblk_idx < n_wblock) {
               // Copy packet data to data buffer of working block
               dest_feng_pktidx_offset = ((PKT_PAYLOAD_CP_T*)
-                datablock_stats_data(((struct datablock_stats*) wblk+wblk_idx)))
-                + (blk0_relative_pkt_seq_num%obs_info.pktidx_per_block)*time_byte_stride // offset for time// for TFP/_DP4A: 'Nants' is faster than 'Chans'
+                datablock_stats_data(wblk+wblk_idx))
+                + (pkt_info.pktidx%obs_info.pktidx_per_block)*time_byte_stride // offset for time// for TFP/_DP4A: 'Nants' is faster than 'Chans'
                 + (pkt_info.pkt_schan-obs_info.schan)*channel_byte_stride
                 + (pkt_info.feng_id*antenna_byte_stride); // offset for frequency
               
@@ -744,6 +747,16 @@ int debug_i=0, debug_j=0;
               PKT_OBS_PKTNTIME_flagged = 1;
             }
             break;
+          case PKT_OBS_PKTIDX:
+            if(!PKT_OBS_PKTIDX_flagged){
+              obs_info_validity = OBS_INVALID_PKTIDX;
+              hashpipe_error(thread_name, 
+                "Packet ignored: PKT_OBS_PKTIDX\n\tPKTIDX-block0_pktidx %ld %% %d ATASNAP_DEFAULT_PKTNTIME != 0",
+                pkt_info.pktidx, ATASNAP_DEFAULT_PKTNTIME
+              );
+              PKT_OBS_PKTIDX_flagged = 1;
+            }
+            break;
           default:
             obs_info_validity = OBS_INVALID;
             break;
@@ -780,6 +793,18 @@ int debug_i=0, debug_j=0;
       obs_info_validity = OBS_INVALID_NCHAN;
       hashpipe_status_lock_safe(st);
         hputs(st->buf, "OBSINFO", "INVALID NCHAN");
+      hashpipe_status_unlock_safe(st);
+    }
+    else if(obs_info_validity == OBS_INVALID_PKTNTIME){
+      obs_info_validity = OBS_INVALID_PKTNTIME;
+      hashpipe_status_lock_safe(st);
+        hputs(st->buf, "OBSINFO", "INVALID PKTNCHAN");
+      hashpipe_status_unlock_safe(st);
+    }
+    else if(obs_info_validity == OBS_INVALID_PKTIDX){
+      obs_info_validity = OBS_INVALID_PKTIDX;
+      hashpipe_status_lock_safe(st);
+        hputs(st->buf, "OBSINFO", "INVALID PKTIDX !%%= ATASNAP_DEFAULT_PKTNTIME");
       hashpipe_status_unlock_safe(st);
     }
 

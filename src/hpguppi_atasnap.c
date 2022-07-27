@@ -134,52 +134,47 @@ void wait_for_block_free(const struct datablock_stats * d,
 
 unsigned check_pkt_observability_silent(
     const struct ata_snap_obs_info * ata_oi,
-    const uint64_t pkt_idx,
     const uint64_t obs_start_pktidx,
-    const uint16_t feng_id,
-    const uint16_t pkt_schan
+    const struct ata_snap_pkt_info *pkt_info
   )
 {
-  if(pkt_idx < obs_start_pktidx){
+  if(pkt_info->pktidx < obs_start_pktidx){
     return PKT_OBS_IDX;
   }
-  return check_pkt_observability_sans_idx(ata_oi,
-                                          feng_id,
-                                          pkt_schan);
+  return check_pkt_observability_sans_idx(ata_oi, pkt_info);
 }
 
 unsigned check_pkt_observability(
     const struct ata_snap_obs_info * ata_oi,
-    const uint64_t pkt_idx,
     const uint64_t obs_start_pktidx,
-    const uint16_t feng_id,
-    const uint16_t pkt_schan
+    const struct ata_snap_pkt_info *pkt_info
   )
 {
   unsigned obs_code = check_pkt_observability_silent(
     ata_oi,
-    pkt_idx,
     obs_start_pktidx,
-    feng_id,
-    pkt_schan
+    pkt_info
   );
   switch(obs_code){
     case PKT_OBS_IDX:
-      // hashpipe_error(__FUNCTION__, "pkt_idx (%lu) < (%lu) obs_start_pktidx", pkt_idx, obs_start_pktidx);
+      // hashpipe_error(__FUNCTION__, "pkt_idx (%lu) < (%lu) obs_start_pktidx", pkt_info.pktidx, obs_start_pktidx);
       break;
     case PKT_OBS_FENG:
-      hashpipe_warn(__FUNCTION__, "feng_id (%u) >= (%u) ata_oi->nants", feng_id, ata_oi->nants);
+      hashpipe_warn(__FUNCTION__, "feng_id (%u) >= (%u) ata_oi->nants", pkt_info->feng_id, ata_oi->nants);
       break;
     case PKT_OBS_SCHAN:
-      hashpipe_warn(__FUNCTION__, "pkt_schan (%d) < (%d) ata_oi->schan", pkt_schan, ata_oi->schan);
+      hashpipe_warn(__FUNCTION__, "pkt_schan (%d) < (%d) ata_oi->schan", pkt_info->pkt_schan, ata_oi->schan);
       break;
     case PKT_OBS_NCHAN:
       hashpipe_warn(__FUNCTION__, "pkt_chans [%d-%d] <> [%d-%d] ata_oi->chans",
-              pkt_schan, pkt_schan + ata_oi->pkt_nchan, ata_oi->schan, ata_oi->schan + ata_oi->nchan);
+              pkt_info->pkt_schan, pkt_info->pkt_schan + ata_oi->pkt_nchan, ata_oi->schan, ata_oi->schan + ata_oi->nchan);
       break;
     case PKT_OBS_PKTNTIME:
       hashpipe_error(__FUNCTION__, "PKTNTIME %d != %d ATASNAP_DEFAULT_PKTNTIME",
               ata_oi->pkt_ntime, ATASNAP_DEFAULT_PKTNTIME);
+    case PKT_OBS_PKTIDX:
+      hashpipe_error(__FUNCTION__, "pkt_idx (%lu) %% (%lu) ATASNAP_DEFAULT_PKTNTIME != 0",
+              pkt_info->pktidx, ATASNAP_DEFAULT_PKTNTIME);
     default:
       break;
   }
@@ -396,8 +391,8 @@ void ata_snap_obs_info_write_with_validity(hashpipe_status_t *st, struct ata_sna
   hashpipe_status_unlock_safe(st);
 }
 
-// Align the blk0_start index to be integer (preferably positive) 
-// multiples of pktidx_per_block away from obsstart.
+// Align the blk0_start index to the nearest integer-multiple
+// of pktidx_per_block*ATASNAP_DEFAULT_PKTNTIME away from obsstart.
 char align_blk0_with_obsstart(uint64_t * blk0_start_pktidx, uint32_t obsstart, uint32_t pktidx_per_block){
   //
   // blk0
@@ -420,20 +415,23 @@ char align_blk0_with_obsstart(uint64_t * blk0_start_pktidx, uint32_t obsstart, u
   //      |^^|offset
   //      0___|___...
 
-  uint32_t blk_obsstart_alignment_offset = (obsstart - *blk0_start_pktidx)%pktidx_per_block;
+  int64_t blk_obsstart_alignment_offset = abs(obsstart - *blk0_start_pktidx);
+  // round offset up to nearest multiple of ATASNAP_DEFAULT_PKTNTIME
+  blk_obsstart_alignment_offset = ((blk_obsstart_alignment_offset+ATASNAP_DEFAULT_PKTNTIME-1)/ATASNAP_DEFAULT_PKTNTIME)*ATASNAP_DEFAULT_PKTNTIME;
+  // mod offset to less than one block
+  blk_obsstart_alignment_offset %= pktidx_per_block;
 
-  if(blk_obsstart_alignment_offset != 0){
-    // Subtract rather, so that the offset motion is more inclusive rather than exclusive
-    // (particularly for the case of blk0 > obsstart)
-    if(*blk0_start_pktidx > pktidx_per_block){
-      blk_obsstart_alignment_offset = pktidx_per_block - blk_obsstart_alignment_offset;
-      *blk0_start_pktidx -= blk_obsstart_alignment_offset;
+  if(blk_obsstart_alignment_offset != 0) {
+    if(*blk0_start_pktidx + pktidx_per_block >= obsstart) {
+      // block-range of reference pktidx is already past obsstart, so
+      // subtract rather: the offset motion is inclusive of more packets
+      blk_obsstart_alignment_offset = blk_obsstart_alignment_offset - pktidx_per_block;
     }
-    else{
-      *blk0_start_pktidx += blk_obsstart_alignment_offset;
-    }
+    // else obsstart is not near, just align to next block-range
+    *blk0_start_pktidx += blk_obsstart_alignment_offset;
+
     hashpipe_info(__FUNCTION__,
-        "working blocks reinit to align pktstart to obsstart\n\t\toffset of -%lu",
+        "working blocks reinit to align pktstart to obsstart\n\t\toffset of %ld",
         blk_obsstart_alignment_offset);
     return 1;
   }

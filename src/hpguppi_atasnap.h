@@ -212,8 +212,6 @@
 #define ATA_IBV_OUT_DATABUF_T struct hpguppi_input_xgpu_databuf
 #endif
 
-hashpipe_databuf_t *hpguppi_ata_ibv_output_databuf_create(int instance_id, int databuf_id);
-
 // Define run states.  Currently three run states are defined: IDLE, LISTEN,
 // and RECORD.
 //
@@ -269,10 +267,12 @@ enum pkt_obs_code { PKT_OBS_OK=0,
                     PKT_OBS_FENG,
                     PKT_OBS_SCHAN,
                     PKT_OBS_NCHAN,
-                    PKT_OBS_PKTNTIME
+                    PKT_OBS_PKTNTIME,
+                    PKT_OBS_PKTIDX
                   };
 enum obs_info_validity { 
-                OBS_UNKNOWN=-6,         //=-5
+                OBS_UNKNOWN=-7,         //=-7
+                OBS_INVALID_PKTIDX=-6,  //=-6
                 OBS_INVALID_PKTNTIME=-5,//=-5
                 OBS_INVALID_FENG=-4,    //=-4
                 OBS_INVALID_SCHAN=-3,   //=-3
@@ -727,38 +727,36 @@ void wait_for_block_free(const struct datablock_stats * d,
 static inline
 unsigned check_pkt_observability_sans_idx(
     const struct ata_snap_obs_info * ata_oi,
-    const uint16_t feng_id,
-    const uint16_t pkt_schan
+    const struct ata_snap_pkt_info *pkt_info
   )
 {
-  if(feng_id >= ata_oi->nants){
+  if(pkt_info->feng_id >= ata_oi->nants){
     return PKT_OBS_FENG;
   }
-  if(pkt_schan < ata_oi->schan){
+  if(pkt_info->pkt_schan < ata_oi->schan){
     return PKT_OBS_SCHAN;
   }
-  if(pkt_schan + ata_oi->pkt_nchan > ata_oi->schan + ata_oi->nchan){
+  if(pkt_info->pkt_schan + ata_oi->pkt_nchan > ata_oi->schan + ata_oi->nchan){
     return PKT_OBS_NCHAN;
   }
   if(ata_oi->pkt_ntime != ATASNAP_DEFAULT_PKTNTIME){
     return PKT_OBS_PKTNTIME;
+  }
+  if(pkt_info->pktidx % ATASNAP_DEFAULT_PKTNTIME != 0){
+    return PKT_OBS_PKTIDX;
   }
   return PKT_OBS_OK;
 }
 
 unsigned check_pkt_observability(
     const struct ata_snap_obs_info * ata_oi,
-    const uint64_t pkt_idx,
     const uint64_t obs_start_pktidx,
-    const uint16_t feng_id,
-    const uint16_t pkt_schan
+    const struct ata_snap_pkt_info *pkt_info
   );
 unsigned check_pkt_observability_silent(
     const struct ata_snap_obs_info * ata_oi,
-    const uint64_t pkt_idx,
     const uint64_t obs_start_pktidx,
-    const uint16_t feng_id,
-    const uint16_t pkt_schan
+    const struct ata_snap_pkt_info *pkt_info
   );
 
 uint32_t update_stt_status_keys( hashpipe_status_t *st,
