@@ -493,6 +493,11 @@ static void *run(hashpipe_thread_args_t *args)
       hgetr8(databuf_header, "TBIN", &tbin);
       tbin *= BLADE_ATA_CONFIG.integrationSize;
       hputr8(databuf_header, "TBIN", tbin);
+      
+      // negate OBSBW to indicate descending frequency-channel order
+      double obsbw;
+      hgetr8(databuf_header, "OBSBW", &obsbw);
+      hputr8(databuf_header, "OBSBW", -1.0*obsbw);
       #else
       hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS); // beams are split into separate files...
       #endif

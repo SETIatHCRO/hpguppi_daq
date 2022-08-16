@@ -96,6 +96,12 @@ void hpguppi_fil_read_header_from_status(
       - raw_hdr.obsbw*((raw_hdr.obsnchan/nsources)-1)
           /(2*raw_hdr.obsnchan/nsources);
     
+    // if(raw_hdr.obsbw < 0) {
+    //   // handle descending frequency channels
+    //   filheader->fch1 += raw_hdr.obsbw;
+    //   filheader->foff *= -1;
+    // }
+
     filheader->nchans = raw_hdr.obsnchan/nsources; // Number of channels in file (across antenna/beams).
     filheader->tsamp = raw_hdr.tbin; // Sampling time in seconds.
   }
