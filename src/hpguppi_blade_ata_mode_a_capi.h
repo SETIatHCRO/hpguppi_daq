@@ -60,10 +60,7 @@ bool blade_ata_a_initialize(
 );
 size_t blade_ata_a_get_input_size();
 size_t blade_ata_a_get_output_size();
-bool blade_ata_a_set_antenna_positions(void* xyz_positions, bool block);
-bool blade_ata_a_set_antenna_calibrations(void* calibrations, bool block);
-bool blade_ata_a_set_beam_coordinates(void* coordinates, bool block);
-bool blade_ata_a_set_boresight_coordinates(void* coordinate, bool block);
+
 bool blade_ata_a_enqueue(void* input_ptr, void* output_ptr, size_t id, double time_mjd, double dut1);
 bool blade_ata_a_dequeue(size_t* id);
 void blade_ata_a_terminate();
