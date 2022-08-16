@@ -57,6 +57,7 @@ bool blade_ata_a_initialize(
 
         .channelizerRate = ata_a_config.channelizerRate,
         .beamformerBeams = ata_a_config.beamformerBeams,
+        .enableIncoherentBeam = BLADE_ATA_MODE_A_OUTPUT_INCOHERENT_BEAM,
 
         .rfFrequencyHz = observationMeta->rfFrequencyHz,
         .channelBandwidthHz = observationMeta->channelBandwidthHz,

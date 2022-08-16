@@ -155,6 +155,7 @@ static void *run(hashpipe_thread_args_t * args)
   int got_packet_0=0;
   fil_t** filbanks = NULL;
   sigproc_header_t filbank_header;
+  int incoherent_beam_enabled;
 
   unsigned char base_filename_stem_start;
 
@@ -365,6 +366,9 @@ static void *run(hashpipe_thread_args_t * args)
           hputs(st->buf, "OBSSTEM", pf.basefilename+base_filename_stem_start);
         hashpipe_status_unlock_safe(st);
 
+        incoherent_beam_enabled = 0;
+        hgeti4(datablock_header, "INCOBEAM", &incoherent_beam_enabled);
+
         // Open filterbank files for each beam
         for(i = 0; i < filbank_header.nbeams; i++) {
           sprintf(fname, "%s-beam%04d.fil", pf.basefilename, i);
@@ -375,6 +379,9 @@ static void *run(hashpipe_thread_args_t * args)
           }
           memcpy(filbanks[i]->header, &filbank_header, sizeof(sigproc_header_t));
           filbanks[i]->header->ibeam = i;
+          if(incoherent_beam_enabled && i == filbank_header.nbeams-1) {
+            filbanks[i]->header->ibeam *= -1;
+          }
           write_header(*filbanks[i]);
         }        
 

@@ -481,14 +481,15 @@ static void *run(hashpipe_thread_args_t *args)
             BLOCK_HDR_SIZE);
       
       //TODO upate output_buffer headers to reflect that they contain beams
-      hputi4(databuf_header, "NBEAMS", BLADE_ATA_CONFIG.beamformerBeams);
+      hputi4(databuf_header, "INCOBEAM", (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
+      hputi4(databuf_header, "NBEAMS", BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
       hputi4(databuf_header, "NBITS", BLADE_ATA_OUTPUT_NBITS);
       hputs(databuf_header, "DATATYPE", "FLOAT");
       hputs(databuf_header, "SMPLTYPE", BLADE_ATA_OUTPUT_SAMPLE_TYPE);
       hputi4(databuf_header, "BLOCSIZE", BLADE_BLOCK_DATA_SIZE);
       #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
       // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
-      hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.beamformerBeams); 
+      hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*(BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0))); 
       hputi4(databuf_header, "NPOL", BLADE_ATA_CONFIG.numberOfOutputPolarizations);
       hgetr8(databuf_header, "TBIN", &tbin);
       tbin *= BLADE_ATA_CONFIG.integrationSize;
@@ -518,7 +519,7 @@ static void *run(hashpipe_thread_args_t *args)
       float* tpf_output = (float*) hpguppi_databuf_data(outdb, input_output_blockid_pairs[dequeued_input_id]);
 
       const int npol = BLADE_ATA_CONFIG.numberOfOutputPolarizations;
-      const int nbeams = BLADE_ATA_CONFIG.beamformerBeams;
+      const int nbeams = BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0);
       const int nfreq = BLADE_ATA_CONFIG.inputDims.NCHANS;
       const int ntime = BLADE_ATA_CONFIG.inputDims.NTIME / BLADE_ATA_CONFIG.integrationSize;
       int b,f,t,p;
