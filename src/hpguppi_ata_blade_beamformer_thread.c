@@ -58,8 +58,8 @@ void collect_beamCoordinates(int nbeams, double* beam_coordinates,
   // Getting phase center
   hgetr8(databuf_header, "RA_STR",  phase_center+0);
   hgetr8(databuf_header, "DEC_STR", phase_center+1);
-  phase_center[0] = calc_deg2rad(phase_center[0]* 360.0 / 24.0); // convert from hours to degrees
-  phase_center[1] = calc_deg2rad(phase_center[1]);
+  phase_center[0] = calc_rad_from_degree(phase_center[0]* 360.0 / 24.0); // convert from hours to degrees
+  phase_center[1] = calc_rad_from_degree(phase_center[1]);
 
 
   // Getting beam coordinates
@@ -67,11 +67,11 @@ void collect_beamCoordinates(int nbeams, double* beam_coordinates,
   for(int beam_idx = 0; beam_idx < nbeams; beam_idx++) {
     sprintf(coordkey, "RA_OFF%d", beam_idx%10);
     hgetr8(databuf_header, coordkey, beam_coordinates+beam_idx*2+0);
-    beam_coordinates[beam_idx*2+0] = calc_deg2rad(beam_coordinates[beam_idx*2+0] * 360.0 / 24.0);
+    beam_coordinates[beam_idx*2+0] = calc_rad_from_degree(beam_coordinates[beam_idx*2+0] * 360.0 / 24.0);
 
     sprintf(coordkey, "DEC_OFF%d", beam_idx%10);
     hgetr8(databuf_header, coordkey, beam_coordinates+beam_idx*2+1);
-    beam_coordinates[beam_idx*2+1] = calc_deg2rad(beam_coordinates[beam_idx*2+1]);
+    beam_coordinates[beam_idx*2+1] = calc_rad_from_degree(beam_coordinates[beam_idx*2+1]);
   }
 }
 
@@ -329,8 +329,8 @@ static void *run(hashpipe_thread_args_t *args)
         hashpipe_info(thread_name, "Parsing '%s' as Observation information.", obs_info_toml_filepath);
         UVH5toml_parse_observation_info(obs_info_toml_filepath, &uvh5_header);
         UVH5Hadmin(&uvh5_header);
-        arrayReferencePosition.LAT = calc_deg2rad(uvh5_header.latitude);
-        arrayReferencePosition.LON = calc_deg2rad(uvh5_header.longitude);
+        arrayReferencePosition.LAT = calc_rad_from_degree(uvh5_header.latitude);
+        arrayReferencePosition.LON = calc_rad_from_degree(uvh5_header.longitude);
         arrayReferencePosition.ALT = uvh5_header.altitude;
 
         obs_antenna_names = malloc(uvh5_header.Nants_data*sizeof(char*));

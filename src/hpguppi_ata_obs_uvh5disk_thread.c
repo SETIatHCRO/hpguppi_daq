@@ -328,10 +328,13 @@ static void *run(hashpipe_thread_args_t * args)
               
               const int strlength = strlen(token);
               for(int p = 0; p < npols; p++){
-                inputpairs[inputpairs_index].antenna = malloc(strlength+1);
-                strncpy(inputpairs[inputpairs_index].antenna, token, strlength+1);
+                inputpairs[inputpairs_index].antenna = malloc(strlength);// drop last Char (L.O. ID)
+                strncpy(inputpairs[inputpairs_index].antenna, token, strlength-1);
+                inputpairs[inputpairs_index].antenna[strlength-1] = '\0';
+
                 inputpairs[inputpairs_index++].polarization = polarizations_list[p];
               }
+              hashpipe_info(thread_name, "antenna #%d: %s", inputpairs_index/2, inputpairs[inputpairs_index-1].antenna);
               token = strtok(NULL, ",");
             }
           }
@@ -367,13 +370,13 @@ static void *run(hashpipe_thread_args_t * args)
           hgetr8(datablock_header, "RA_STR", &uvh5_header->phase_center_ra);
           uvh5_header->phase_center_ra = uvh5_header->phase_center_ra * 360.0 / 24.0; // hours to degrees
           hgetr8(datablock_header, "DEC_STR", &uvh5_header->phase_center_dec);
-          uvh5_header->phase_center_ra = calc_deg2rad(uvh5_header->phase_center_ra);
-          uvh5_header->phase_center_dec = calc_deg2rad(uvh5_header->phase_center_dec);
+          uvh5_header->phase_center_ra = calc_rad_from_degree(uvh5_header->phase_center_ra);
+          uvh5_header->phase_center_dec = calc_rad_from_degree(uvh5_header->phase_center_dec);
           uvh5_header->phase_center_epoch = 2000.0;
           uvh5_header->phase_center_frame = "icrs";
 
-          longitude_rad = calc_deg2rad(uvh5_header->longitude);
-          latitude_rad = calc_deg2rad(uvh5_header->latitude);
+          longitude_rad = calc_rad_from_degree(uvh5_header->longitude);
+          latitude_rad = calc_rad_from_degree(uvh5_header->latitude);
 
           dut1 = 0.0;
           hgetr8(datablock_header, "DUT1", &dut1); // single DUT1 value for all observation time
@@ -385,8 +388,8 @@ static void *run(hashpipe_thread_args_t * args)
           uvh5_header->time_array[0] = MJD0;
           uvh5_header->time_array[0] += (double)mjd->stt_imjd;
           uvh5_header->time_array[0] += ((double)mjd->stt_smjd)/86400.0;
-          uvh5_header->time_array[0] += (tau/2) / DAYSEC;
-          hashpipe_info(thread_name, "UVH5 time starts at %f (tau/DAYSEC %f)", uvh5_header->time_array[0], tau/DAYSEC);
+          uvh5_header->time_array[0] += (tau/2) / RADIOINTERFEROMETERY_DAYSEC;
+          hashpipe_info(thread_name, "UVH5 time starts at %f (tau/DAYSEC %f)", uvh5_header->time_array[0], tau/RADIOINTERFEROMETERY_DAYSEC);
           uvh5_header->integration_time[0] = tau;
           // uvh5_header->lst_array[0] = calc_lst(uvh5_header->time_array[0], dut1) + longitude_rad;
           uvh5_header->dut1 = dut1;
@@ -470,7 +473,7 @@ static void *run(hashpipe_thread_args_t * args)
         );
         #endif
 
-        uvh5_header->time_array[0] += + tau/DAYSEC;
+        uvh5_header->time_array[0] += + tau/RADIOINTERFEROMETERY_DAYSEC;
         // uvh5_header->lst_array[0] = calc_lst(uvh5_header->time_array[0], dut1) + longitude_rad;
         hgetr8(datablock_header, "NSAMPLES", uvh5_file.nsamples);
         for (i = 0; i < uvh5_header->Nbls; i++) {
@@ -486,8 +489,8 @@ static void *run(hashpipe_thread_args_t * args)
           hgetr8(datablock_header, "RA_STR", &ra_rad);
           ra_rad = ra_rad * 360.0 / 24.0; // hours to degrees
           hgetr8(datablock_header, "DEC_STR", &dec_rad);
-          ra_rad = calc_deg2rad(ra_rad);
-          dec_rad = calc_deg2rad(dec_rad);
+          ra_rad = calc_rad_from_degree(ra_rad);
+          dec_rad = calc_rad_from_degree(dec_rad);
 
           calc_ha_dec_rad(
             ra_rad,
