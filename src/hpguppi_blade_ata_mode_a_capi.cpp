@@ -3,7 +3,7 @@
 
 #include "blade/base.hh"
 #include "blade/runner.hh"
-#include "blade/pipelines/ata/mode_a.hh"
+#include "blade/pipelines/ata/mode_b.hh"
 
 extern "C" {
 #include "hpguppi_blade_ata_mode_a_capi.h"
@@ -12,7 +12,7 @@ extern "C" {
 using namespace Blade;
 using namespace Blade::Pipelines::ATA;
 
-using BladePipeline = ModeA<BLADE_ATA_MODE_A_OUTPUT_ELEMENT_T>;
+using BladePipeline = ModeB<BLADE_ATA_MODE_A_OUTPUT_ELEMENT_T>;
 static std::unique_ptr<Runner<BladePipeline>> runner;
 
 bool blade_ata_a_initialize(
@@ -50,35 +50,36 @@ bool blade_ata_a_initialize(
             antennaCalibrationsCpp.size()*sizeof(antennaCalibrationsCpp[0]));
 
     BladePipeline::Config config = {
-        .numberOfAntennas  = ata_a_config.inputDims.NANTS,
-        .numberOfFrequencyChannels = ata_a_config.inputDims.NCHANS,
-        .numberOfTimeSamples  = ata_a_config.inputDims.NTIME,
-        .numberOfPolarizations  = ata_a_config.inputDims.NPOLS,
+        .preBeamformerChannelizerRate = ata_a_config.channelizerRate,
 
-        .channelizerRate = ata_a_config.channelizerRate,
-        .beamformerBeams = ata_a_config.beamformerBeams,
-        .enableIncoherentBeam = BLADE_ATA_MODE_A_OUTPUT_INCOHERENT_BEAM,
-
-        .rfFrequencyHz = observationMeta->rfFrequencyHz,
-        .channelBandwidthHz = observationMeta->channelBandwidthHz,
-        .totalBandwidthHz = observationMeta->totalBandwidthHz,
-        .frequencyStartIndex = observationMeta->frequencyStartIndex,
-        .referenceAntennaIndex = observationMeta->referenceAntennaIndex,
-        .arrayReferencePosition = {
+        .phasorObservationFrequencyHz = observationMeta->rfFrequencyHz,
+        .phasorChannelBandwidthHz = observationMeta->channelBandwidthHz,
+        .phasorTotalBandwidthHz = observationMeta->totalBandwidthHz,
+        .phasorFrequencyStartIndex = observationMeta->frequencyStartIndex,
+        .phasorReferenceAntennaIndex = observationMeta->referenceAntennaIndex,
+        .phasorArrayReferencePosition = {
             .LON = arrayReferencePosition->LON,
             .LAT = arrayReferencePosition->LAT,
             .ALT = arrayReferencePosition->ALT
         },
-        .boresightCoordinate = {
+        .phasorBoresightCoordinate = {
             .RA = obs_phase_center_radecrad[0],
             .DEC = obs_phase_center_radecrad[1]
         },
-        .antennaPositions = antennaPositions,
-        .antennaCalibrations = antennaCalibrationsCpp,
-        .beamCoordinates = beamCoordinates,
+        .phasorAntennaPositions = antennaPositions,
+        .phasorAntennaCalibrations = antennaCalibrationsCpp,
+        .phasorBeamCoordinates = beamCoordinates,
+        
+        .beamformerNumberOfAntennas  = ata_a_config.inputDims.NANTS,
+        .beamformerNumberOfFrequencyChannels = ata_a_config.inputDims.NCHANS,
+        .beamformerNumberOfTimeSamples  = ata_a_config.inputDims.NTIME,
+        .beamformerNumberOfPolarizations  = ata_a_config.inputDims.NPOLS,
+        .beamformerNumberOfBeams = ata_a_config.beamformerBeams,
+        .beamformerIncoherentBeam = BLADE_ATA_MODE_A_OUTPUT_INCOHERENT_BEAM,
 
-        .integrationSize = ata_a_config.integrationSize,
-        .numberOfOutputPolarizations = ata_a_config.numberOfOutputPolarizations,
+        .detectorEnable = true,
+        .detectorIntegrationSize = ata_a_config.integrationSize,
+        .detectorNumberOfOutputPolarizations = ata_a_config.numberOfOutputPolarizations,
 
         .outputMemWidth = ata_a_config.outputMemWidth,
         .outputMemPad = ata_a_config.outputMemPad,
@@ -118,8 +119,10 @@ bool blade_ata_a_enqueue(void* input_ptr, void* output_ptr, size_t id, double ti
     return runner->enqueue([&](auto& worker){
         auto input = Vector<Device::CPU, CI8>(input_ptr, worker.getInputSize());
         auto output = Vector<Device::CPU, BLADE_ATA_MODE_A_OUTPUT_ELEMENT_T>(output_ptr, worker.getOutputSize());
+        auto time_mjd_vec = Vector<Device::CPU, F64>(&time_mjd, 1);
+        auto du1_vec = Vector<Device::CPU, F64>(&dut1, 1);
 
-        worker.run(time_mjd, dut1, input, output);
+        worker.run(time_mjd_vec, du1_vec, input, output);
 
         return id;
     });

@@ -15,7 +15,6 @@ using namespace Blade::Pipelines::ATA;
 using BladePipeline = ModeB<BLADE_ATA_MODE_B_OUTPUT_ELEMENT_T>;
 static std::unique_ptr<Runner<BladePipeline>> runner;
 
-
 bool blade_ata_b_initialize(
     struct blade_ata_mode_b_config ata_b_config,
     size_t numberOfWorkers,
@@ -50,32 +49,37 @@ bool blade_ata_b_initialize(
     memcpy(antennaCalibrationsCpp.data(), antennaCalibrations,
             antennaCalibrationsCpp.size()*sizeof(antennaCalibrationsCpp[0]));
 
-    BladePipeline::Config config = {
-        .numberOfAntennas  = ata_b_config.inputDims.NANTS,
-        .numberOfFrequencyChannels = ata_b_config.inputDims.NCHANS,
-        .numberOfTimeSamples  = ata_b_config.inputDims.NTIME,
-        .numberOfPolarizations  = ata_b_config.inputDims.NPOLS,
+    BladePipeline::Config config = {        
+        .preBeamformerChannelizerRate = ata_b_config.channelizerRate,
 
-        .channelizerRate = ata_b_config.channelizerRate,
-        .beamformerBeams = ata_b_config.beamformerBeams,
-
-        .rfFrequencyHz = observationMeta->rfFrequencyHz,
-        .channelBandwidthHz = observationMeta->channelBandwidthHz,
-        .totalBandwidthHz = observationMeta->totalBandwidthHz,
-        .frequencyStartIndex = observationMeta->frequencyStartIndex,
-        .referenceAntennaIndex = observationMeta->referenceAntennaIndex,
-        .arrayReferencePosition = {
+        .phasorObservationFrequencyHz = observationMeta->rfFrequencyHz,
+        .phasorChannelBandwidthHz = observationMeta->channelBandwidthHz,
+        .phasorTotalBandwidthHz = observationMeta->totalBandwidthHz,
+        .phasorFrequencyStartIndex = observationMeta->frequencyStartIndex,
+        .phasorReferenceAntennaIndex = observationMeta->referenceAntennaIndex,
+        .phasorArrayReferencePosition = {
             .LON = arrayReferencePosition->LON,
             .LAT = arrayReferencePosition->LAT,
             .ALT = arrayReferencePosition->ALT
         },
-        .boresightCoordinate = {
+        .phasorBoresightCoordinate = {
             .RA = obs_phase_center_radecrad[0],
             .DEC = obs_phase_center_radecrad[1]
         },
-        .antennaPositions = antennaPositions,
-        .antennaCalibrations = antennaCalibrationsCpp,
-        .beamCoordinates = beamCoordinates,
+        .phasorAntennaPositions = antennaPositions,
+        .phasorAntennaCalibrations = antennaCalibrationsCpp,
+        .phasorBeamCoordinates = beamCoordinates,
+        
+        .beamformerNumberOfAntennas  = ata_b_config.inputDims.NANTS,
+        .beamformerNumberOfFrequencyChannels = ata_b_config.inputDims.NCHANS,
+        .beamformerNumberOfTimeSamples  = ata_b_config.inputDims.NTIME,
+        .beamformerNumberOfPolarizations  = ata_b_config.inputDims.NPOLS,
+        .beamformerNumberOfBeams = ata_b_config.beamformerBeams,
+        .beamformerIncoherentBeam = false,
+
+        .detectorEnable = false,
+        .detectorIntegrationSize = 1,
+        .detectorNumberOfOutputPolarizations = 1,
 
         .outputMemWidth = ata_b_config.outputMemWidth,
         .outputMemPad = ata_b_config.outputMemPad,
@@ -83,14 +87,42 @@ bool blade_ata_b_initialize(
         .castBlockSize = ata_b_config.castBlockSize,
         .channelizerBlockSize = ata_b_config.channelizerBlockSize,
         .beamformerBlockSize = ata_b_config.beamformerBlockSize,
+        .detectorBlockSize = ata_b_config.beamformerBlockSize
     };
 
-    //config.antennaCalibrations.resize(
-    //    config.numberOfAntennas *
-    //    config.numberOfFrequencyChannels *
-    //    config.channelizerRate *
-    //    config.numberOfPolarizations
-    //);
+    // config.phasorAntennaCalibrations.resize(
+    //    config.beamformerNumberOfAntennas *
+    //    config.beamformerNumberOfFrequencyChannels *
+    //    config.beamformerNumberOfTimeSamples *
+    //    config.beamformerNumberOfPolarizations
+    // );
+
+    // const size_t calAntStride = 1;
+    // const size_t calPolStride = config.beamformerNumberOfAntennas * calAntStride;
+    // const size_t calChnStride = config.beamformerNumberOfPolarizations * calPolStride;
+
+    // const size_t weightsPolStride = 1;
+    // const size_t weightsChnStride = config.beamformerNumberOfPolarizations * weightsPolStride;
+    // const size_t weightsAntStride = config.beamformerNumberOfFrequencyChannels * weightsChnStride;
+
+    // for (U64 antIdx = 0; antIdx < config.beamformerNumberOfAntennas; antIdx++) {
+    //     for (U64 chnIdx = 0; chnIdx < config.beamformerNumberOfFrequencyChannels; chnIdx++) {
+    //         for (U64 polIdx = 0; polIdx < config.beamformerNumberOfPolarizations; polIdx++) {
+    //             for (U64 fchIdx = 0; fchIdx < config.preBeamformerChannelizerRate; fchIdx++) {
+    //                 const auto inputIdx = chnIdx * calChnStride +
+    //                                       polIdx * calPolStride + 
+    //                                       antIdx * calAntStride;
+
+    //                 const auto frqIdx = chnIdx * config.preBeamformerChannelizerRate + fchIdx;
+    //                 const auto outputIdx = antIdx * weightsAntStride +
+    //                                        polIdx * weightsPolStride +
+    //                                        frqIdx * weightsChnStride;
+
+    //                 config.phasorAntennaCalibrations[outputIdx] = antennaCalibrationsCpp[inputIdx];
+    //             }
+    //         }
+    //     }
+    // }
     
     runner = Runner<BladePipeline>::New(numberOfWorkers, config);
 
@@ -120,8 +152,10 @@ bool blade_ata_b_enqueue(void* input_ptr, void* output_ptr, size_t id, double ti
     return runner->enqueue([&](auto& worker){
         auto input = Vector<Device::CPU, CI8>(input_ptr, worker.getInputSize());
         auto output = Vector<Device::CPU, BLADE_ATA_MODE_B_OUTPUT_ELEMENT_T>(output_ptr, worker.getOutputSize());
+        auto time_mjd_vec = Vector<Device::CPU, F64>(&time_mjd, 1);
+        auto du1_vec = Vector<Device::CPU, F64>(&dut1, 1);
 
-        worker.run(time_mjd, dut1, input, output);
+        worker.run(time_mjd_vec, du1_vec, input, output);
 
         return id;
     });
