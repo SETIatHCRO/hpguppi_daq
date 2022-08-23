@@ -482,7 +482,7 @@ static void *run(hashpipe_thread_args_t *args)
       
       //TODO upate output_buffer headers to reflect that they contain beams
       hputi4(databuf_header, "INCOBEAM", (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
-      hputi4(databuf_header, "NBEAMS", BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
+      hputi4(databuf_header, "NBEAM", BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
       hputi4(databuf_header, "NBITS", BLADE_ATA_OUTPUT_NBITS);
       hputs(databuf_header, "DATATYPE", "FLOAT");
       hputs(databuf_header, "SMPLTYPE", BLADE_ATA_OUTPUT_SAMPLE_TYPE);

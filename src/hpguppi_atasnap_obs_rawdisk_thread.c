@@ -263,17 +263,18 @@ static void *run(hashpipe_thread_args_t * args)
           free(fdraws);
 
           nbeams = 0;
-          hgeti4(datablock_header, "NBEAMS", &nbeams);
+          hgeti4(datablock_header, "NBEAM", &nbeams);
           if(nbeams>0){
             if(file_blocksize % nbeams == 0){
-              hashpipe_warn(thread_name, "BLOCSIZE %d split per NBEAMS %d.", file_blocksize, nbeams);
+              hashpipe_warn(thread_name, "BLOCSIZE %d split per NBEAM %d.", file_blocksize, nbeams);
               file_blocksize /= nbeams;
             }
             else{
-              hashpipe_warn(thread_name, "NBEAMS %d is not a factor of BLOCSIZE %d. Outputting a single file.", nbeams, file_blocksize);
+              hashpipe_warn(thread_name, "NBEAM %d is not a factor of BLOCSIZE %d. Outputting a single file.", nbeams, file_blocksize);
               nbeams = 1;
             }
             nfdraws = nbeams;
+            hputi4(databuf_header, "BEAM_ID", -1); // default is unknown, ensuring the key exists
           }
           else{
             nfdraws = 1;
@@ -414,7 +415,8 @@ static void *run(hashpipe_thread_args_t * args)
       if (got_packet_0) {
         // Overwrite the incoming datablock headers to match that files are split
         if(nbeams > 0) {
-          hputi4(datablock_header, "NBEAMS", 1);
+          hputi4(datablock_header, "NANTS", 1);
+          hputi4(datablock_header, "NBEAM", nbeams);
         }
         hputi4(datablock_header, "BLOCSIZE", file_blocksize);
         
@@ -449,6 +451,9 @@ static void *run(hashpipe_thread_args_t * args)
         
         for(i = 0; i < nfdraws; i++){
           /* Write header (and padding, if any) */
+          if(nbeams > 0) {
+            hputi4(datablock_header, "BEAM_ID", i);
+          }
           rv = write_all(fdraws[i], datablock_header, len);
           if (rv != len) {
               char msg[100];
