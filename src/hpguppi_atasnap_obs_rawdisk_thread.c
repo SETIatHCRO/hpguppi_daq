@@ -274,7 +274,7 @@ static void *run(hashpipe_thread_args_t * args)
               nbeams = 1;
             }
             nfdraws = nbeams;
-            hputi4(databuf_header, "BEAM_ID", -1); // default is unknown, ensuring the key exists
+            hputi4(datablock_header, "BEAM_ID", -1); // default is unknown, ensuring the key exists
           }
           else{
             nfdraws = 1;
