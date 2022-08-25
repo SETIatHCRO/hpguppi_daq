@@ -67,7 +67,7 @@ bool blade_ata_a_initialize(
             .DEC = obs_phase_center_radecrad[1]
         },
         .phasorAntennaPositions = antennaPositions,
-        .phasorAntennaCalibrations = antennaCalibrationsCpp,
+        .phasorAntennaCalibrations = {0},
         .phasorBeamCoordinates = beamCoordinates,
         
         .beamformerNumberOfAntennas  = ata_a_config.inputDims.NANTS,
@@ -90,7 +90,40 @@ bool blade_ata_a_initialize(
         .detectorBlockSize = ata_a_config.detectorBlockSize
     };
 
-    
+    config.phasorAntennaCalibrations.resize(
+       config.beamformerNumberOfAntennas *
+       config.beamformerNumberOfFrequencyChannels *
+       config.preBeamformerChannelizerRate *
+       config.beamformerNumberOfPolarizations
+    );
+
+    const size_t calAntStride = 1;
+    const size_t calPolStride = config.beamformerNumberOfAntennas * calAntStride;
+    const size_t calChnStride = config.beamformerNumberOfPolarizations * calPolStride;
+
+    const size_t weightsPolStride = 1;
+    const size_t weightsChnStride = config.beamformerNumberOfPolarizations * weightsPolStride;
+    const size_t weightsAntStride = config.beamformerNumberOfFrequencyChannels * weightsChnStride;
+
+    for (U64 antIdx = 0; antIdx < config.beamformerNumberOfAntennas; antIdx++) {
+        for (U64 chnIdx = 0; chnIdx < config.beamformerNumberOfFrequencyChannels; chnIdx++) {
+            for (U64 polIdx = 0; polIdx < config.beamformerNumberOfPolarizations; polIdx++) {
+                for (U64 fchIdx = 0; fchIdx < config.preBeamformerChannelizerRate; fchIdx++) {
+                    const auto inputIdx = chnIdx * calChnStride +
+                                          polIdx * calPolStride + 
+                                          antIdx * calAntStride;
+
+                    const auto frqIdx = chnIdx * config.preBeamformerChannelizerRate + fchIdx;
+                    const auto outputIdx = antIdx * weightsAntStride +
+                                           polIdx * weightsPolStride +
+                                           frqIdx * weightsChnStride;
+
+                    config.phasorAntennaCalibrations[outputIdx] = antennaCalibrationsCpp[inputIdx];
+                }
+            }
+        }
+    }
+
     runner = Runner<BladePipeline>::New(numberOfWorkers, config);
 
     return true;
