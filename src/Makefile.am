@@ -21,8 +21,6 @@ hpguppi_support = hpguppi_atasnap.h \
 		  hpguppi_params.c \
 		  hpguppi_pktbuf.h \
 		  hpguppi_pktbuf.c \
- 		  hpguppi_rawspec.h \
- 		  hpguppi_rawspec.c \
 		  hpguppi_time.h   \
 		  hpguppi_time.c   \
 		  hpguppi_util.h   \
@@ -40,8 +38,8 @@ libsla_support = slalib.h sla.c f77.h
 hpguppi_threads = \
 		hpguppi_ata_ibv_payload_order_thread.c \
 		hpguppi_atasnap_obs_rawdisk_thread.c \
-		guppiraw_ibv_packetize_thread.c \
 		mysigproc/mysigproc_utils.c
+#		guppiraw_ibv_packetize_thread.c # depends on rawspec currently
 
 if IBVERBS_ENABLED
 hpguppi_daq_la_LIBADD = -lhashpipe_ibverbs
@@ -53,12 +51,11 @@ endif
 # This is the hpguppi_daq plugin
 lib_LTLIBRARIES = hpguppi_daq.la
 hpguppi_daq_la_SOURCES  = $(hpguppi_databuf) $(hpguppi_support) $(libsla_support) $(hpguppi_threads)
-hpguppi_daq_la_LIBADD  += -lsla -lrt -lrawspec
-hpguppi_daq_la_CFLAGS 	= $(AM_CFLAGS) -I"@RAWSPEC_INCDIR@"
+hpguppi_daq_la_LIBADD  += -lsla -lrt
+hpguppi_daq_la_CFLAGS 	= $(AM_CFLAGS)
 hpguppi_daq_la_LDFLAGS  = -avoid-version -module -shared -export-dynamic
 hpguppi_daq_la_LDFLAGS += -L"@LIBSLADIR@" -Wl,-rpath,"@LIBSLADIR@"
 hpguppi_daq_la_LDFLAGS += -L"@HASHPIPE_LIBDIR@" -Wl,-rpath,"@HASHPIPE_LIBDIR@"
-hpguppi_daq_la_LDFLAGS += -L"@RAWSPEC_LIBDIR@" -Wl,-rpath,"@RAWSPEC_LIBDIR@"
 
 if BLADE_ENABLED
 # bladeapi library
@@ -99,12 +96,20 @@ hpguppi_databuf += \
 		hpguppi_blade_databuf.h
 
 hpguppi_threads += \
-		hpguppi_ata_fildisk_thread.c \
 		hpguppi_ata_blade_beamformer_thread.c
 
 hpguppi_daq_la_LIBADD  += -lblade libbladeapi.la
 hpguppi_daq_la_LDFLAGS += -L"@BLADE_LIBDIR@" -Wl,-rpath,"@BLADE_LIBDIR@"
 hpguppi_daq_la_CFLAGS  += -I "@BLADE_INCDIR@"
+endif
+
+if FILTERBANKH5C99_ENABLED
+hpguppi_daq_la_LDFLAGS += -L"@FILTERBANKH5C99_LIBDIR@" -Wl,-rpath,"@FILTERBANKH5C99_LIBDIR@"
+hpguppi_daq_la_LIBADD  += -lfilterbankh5c99 -lfilterbankc99
+hpguppi_daq_la_CFLAGS  += -I "@FILTERBANKH5C99_INCDIR@"
+
+hpguppi_threads += \
+		hpguppi_ata_fildisk_thread.c
 endif
 
 if CUDA_ENABLED

@@ -21,17 +21,18 @@ $ git checkout 81a79e626d4fe78f3f7cc6209be45b8569fae42d
 $ autoreconf -is && ./configure && make
 ```
 
-## [Rawspec](https://github.com/UCBerkeleySETI/rawspec)
-- [ ] Handle lack of rawspec
+## [Filterbankh5c99](https://github.com/MydonSolutions/filterbankh5c99)
 
 Hpguppi_daq currently expects this for certain files that aren't always in use:
-- hpguppi_rawspec # support
 - hpguppi_ata_fildisk_thread # Contemporary filterbank output
 
 ```
-$ git clone -b seti https://github.com/MydonSolutions/rawspec
-$ cd rawspec
-$ make
+$ git clone https://github.com/MydonSolutions/filterbankh5c99
+$ cd filterbankh5
+$ git submodule init
+$ meson build -Dprefix=${PWD}/install
+$ cd build
+$ ninja test && ninja install
 ```
 
 [CUDA](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html) is required.
@@ -110,8 +111,10 @@ Provide the compilation directory (i.e. xGPU/src).
 - [`--with-uvh5`](https://github.com/MydonSolutions/uvh5c99) will enable UVH5 related threads.
 Provide the compilation directory (i.e. uvh5c99/build).
 
+- [`--with-filterbankh5c99`](https://github.com/MydonSolutions/filterbankh5c99) will enable Filterbank related threads.
+
 All in all:
-`hpguppi_daq/src$ CXX=g++-11 ./configure --with-libsla=../../pyslalib --with-hashpipe=../../hashpipe/src/.libs --with-cuda-include=/usr/local/cuda-11.4.1/include --with-xgpu=../../xGPU/src --with-uvh5=../../uvh5c99/build --with-rawspec=../../rawspec --with-blade=../../blade/install`
+`hpguppi_daq/src$ CXX=g++-11 ./configure --with-libsla=../../pyslalib --with-hashpipe=../../hashpipe/src/.libs --with-cuda-include=/usr/local/cuda-11.4.1/include --with-xgpu=../../xGPU/src --with-uvh5=../../uvh5c99/build --with-rawspec=../../rawspec --with-blade=../../blade/install --with-filterbankh5c99=../../filterbankh5c99/install
 
 Thereafter, `$ make` compiles the threads into `$ ./.libs/hpguppi_daq.so`.
 

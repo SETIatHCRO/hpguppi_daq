@@ -24,7 +24,7 @@
 #include "hpguppi_udp.h"
 #include "hpguppi_time.h"
 #include "hpguppi_atasnap.h"
-#include "hpguppi_rawspec.h"
+#include "filterbankc99/filterbank_utils.h"
 
 #include "ioprio.h"
 
@@ -41,69 +41,113 @@ void hpguppi_fil_read_header_from_status(
   char* statusbuf,
   sigproc_header_t* filheader
 ){
-  rawspec_raw_hdr_t raw_hdr;
-  rawspec_raw_parse_header(statusbuf, &raw_hdr);
+  char src_name[81];
+  char telescop[81];
 
-  // raw_hdr.blocsize;
-  // raw_hdr.npol;
-  // raw_hdr.obsfreq;
-  // raw_hdr.obsbw;
-  // raw_hdr.directio;
-  // raw_hdr.pktidx;
-  // raw_hdr.nants;
-  // raw_hdr.float_data;
-  // raw_hdr.telescop;
+  int smjd;
+  int imjd;
+  char tmp[80];
 
-  snprintf(filheader->source_name, sizeof(filheader->source_name), "%s", raw_hdr.src_name);
+  int blocsize = 0;
+  int npol =     0;
+  int obsnchan = 0;
+  uint32_t nbits =    8;
+  double obsfreq =  0.0;
+  double obsbw =    0.0;
+  double tbin =     0.0;
+  int directio = 0;
+  uint64_t pktidx =  -1;
+  int beam_id = -1;
+  int nbeams =   -1;
+  uint32_t nants =    1;
+  
+  double ra;  // hours
+  double dec; // degrees
+  double mjd;
+
+  hgeti4(statusbuf, "BLOCSIZE", &blocsize);
+  hgeti4(statusbuf, "NPOL", &npol);
+  hgeti4(statusbuf, "OBSNCHAN", &obsnchan);
+  hgetu4(statusbuf, "NBITS", &nbits);
+  hgetr8(statusbuf, "OBSFREQ", &obsfreq);
+  hgetr8(statusbuf, "OBSBW", &obsbw);
+  hgetr8(statusbuf, "TBIN", &tbin);
+  hgeti4(statusbuf, "DIRECTIO", &directio);
+  hgetu8(statusbuf, "PKTIDX", &pktidx);
+  hgeti4(statusbuf, "BEAM_ID", &beam_id);
+  hgeti4(statusbuf, "NBEAM", &nbeams);
+  hgetu4(statusbuf, "NANTS", &nants);
+
+  strncpy(tmp, "INTEGER", 80);
+  hgets(statusbuf, "DATATYPE", 72, tmp);
+
+  strncpy(tmp, "0.0", 80);
+  hgets(statusbuf, "RA_STR", 72, tmp);
+  ra = filterbank_dmsstr_to_ddd(tmp);
+
+  strncpy(tmp, "0.0", 80);
+  hgets(statusbuf, "DEC_STR", 72, tmp);
+  dec = filterbank_dmsstr_to_ddd(tmp);
+
+  hgeti4(statusbuf, "STT_IMJD", &imjd); // TODO use double?
+  hgeti4(statusbuf, "STT_SMJD", &smjd);     // TODO use double?
+  mjd = ((double)imjd) + ((double)smjd)/86400.0;
+
+  strncpy(src_name, "Unknown", 80);
+  hgets(statusbuf, "SRC_NAME", 72, src_name);
+  strncpy(telescop, "Unknown", 80);
+  hgets(statusbuf, "TELESCOP", 72, telescop);
+
+  snprintf(filheader->source_name, sizeof(filheader->source_name), "%s", src_name);
 
   filheader->machine_id = 0;                      // Machine ID
   hgetr8(statusbuf, "AZ", &filheader->az_start);  // azimuth
   hgetr8(statusbuf, "EL", &filheader->za_start);  // zenith angle
   filheader->za_start = 90.0 - filheader->za_start;
-  filheader->nifs = raw_hdr.npol;                // Number of IF (stokes I => IF = 1) (AKA NPOL)
+  filheader->nifs = npol;                // Number of IF (stokes I => IF = 1) (AKA NPOL)
 
-  filheader->telescope_id = fb_telescope_id(raw_hdr.telescop); // Telescope ID
-  filheader->tstart = raw_hdr.mjd;    // MJD
-  int ra_hh = (int)raw_hdr.ra;
-  double ra_mm = (raw_hdr.ra - ra_hh) * 60;
+  filheader->telescope_id = filterbank_telescope_id(telescop); // Telescope ID
+  filheader->tstart = mjd;    // MJD
+  int ra_hh = (int)ra;
+  double ra_mm = (ra - ra_hh) * 60;
   double ra_ss = (ra_mm - ((int)ra_mm)) * 60;
-  int dec_hh = (int)raw_hdr.dec;
-  double dec_mm = (raw_hdr.dec - dec_hh) * 60;
+  int dec_hh = (int)dec;
+  double dec_mm = (dec - dec_hh) * 60;
   double dec_ss = (dec_mm - ((int)dec_mm)) * 60;
 
   // sigproc format is the hh:mm:ss.ms format, without the colons
   filheader->src_raj = (ra_hh * 100.0 + ((int) ra_mm)) * 100.00 + ra_ss;
   filheader->src_dej = (dec_hh * 100.0 + ((int) dec_mm)) * 100.00 + dec_ss;
-  filheader->nbits = raw_hdr.nbits;   // Bit size
-  filheader->nbeams = raw_hdr.nbeams; // Nbeams
-  filheader->ibeam = raw_hdr.beam_id; // Beam number
+  filheader->nbits = nbits;   // Bit size
+  filheader->nbeams = nbeams; // Nbeams
+  filheader->ibeam = beam_id; // Beam number
 
-  int nsources = raw_hdr.nants;
-  if(filheader->nbeams > 0) {
-    hashpipe_info(__FUNCTION__, "NBEAMS %d > 0 overriding NANTS %d value.", filheader->nbeams, raw_hdr.nants);
+  int nsources = nants;
+  if(filheader->nbeams != 0) {
+    hashpipe_info(__FUNCTION__, "NBEAMS %d > 0 overriding NANTS %d value.", filheader->nbeams, nants);
     nsources = filheader->nbeams;
   }
 
   // Emulate https://github.com/UCBerkeleySETI/rawspec/blob/162752186c8406c3ead985c3fd48f4035371cd0f/rawspec.c#L805-L830
   {
-    // raw_hdr.obsnchan is total for all nants
+    // obsnchan is total for all nants
     filheader->foff =
-      raw_hdr.obsbw/(raw_hdr.obsnchan/nsources);
+      obsbw/(obsnchan/nsources);
     // This computes first channel frequency (fch1).
-    // raw_hdr.obsbw is always for single antenna
-    // raw_hdr.obsnchan is total for all nants/nbeams
-    filheader->fch1 = raw_hdr.obsfreq
-      - raw_hdr.obsbw*((raw_hdr.obsnchan/nsources)-1)
-          /(2*raw_hdr.obsnchan/nsources);
+    // obsbw is always for single antenna
+    // obsnchan is total for all nants/nbeams
+    filheader->fch1 = obsfreq
+      - obsbw*((obsnchan/nsources)-1)
+          /(2*obsnchan/nsources);
     
-    // if(raw_hdr.obsbw < 0) {
+    // if(obsbw < 0) {
     //   // handle descending frequency channels
-    //   filheader->fch1 += raw_hdr.obsbw;
+    //   filheader->fch1 += obsbw;
     //   filheader->foff *= -1;
     // }
 
-    filheader->nchans = raw_hdr.obsnchan/nsources; // Number of channels in file (across antenna/beams).
-    filheader->tsamp = raw_hdr.tbin; // Sampling time in seconds.
+    filheader->nchans = obsnchan/nsources; // Number of channels in file (across antenna/beams).
+    filheader->tsamp = tbin; // Sampling time in seconds.
   }
 }
 
