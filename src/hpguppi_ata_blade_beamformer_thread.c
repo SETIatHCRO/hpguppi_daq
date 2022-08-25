@@ -191,9 +191,7 @@ static void *run(hashpipe_thread_args_t *args)
 
   int64_t pktidx_obs_start, pktidx_obs_start_prev, pktidx_blk_start;
   int fenchan;
-  #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
   double tbin;
-  #endif
   double timejd_midblock=0, dut1=0;
 
   while (run_threads())
@@ -487,21 +485,26 @@ static void *run(hashpipe_thread_args_t *args)
       hputs(databuf_header, "DATATYPE", "FLOAT");
       hputs(databuf_header, "SMPLTYPE", BLADE_ATA_OUTPUT_SAMPLE_TYPE);
       hputi4(databuf_header, "BLOCSIZE", BLADE_BLOCK_DATA_SIZE);
+
+      hgetr8(databuf_header, "TBIN", &tbin);
+      tbin *= BLADE_ATA_CONFIG.channelizerRate;
+
       #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
       // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
-      hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*(BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0))); 
+      hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*(BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0))); 
       hputi4(databuf_header, "NPOL", BLADE_ATA_CONFIG.numberOfOutputPolarizations);
-      hgetr8(databuf_header, "TBIN", &tbin);
+      
       tbin *= BLADE_ATA_CONFIG.integrationSize;
-      hputr8(databuf_header, "TBIN", tbin);
       
       // negate OBSBW to indicate descending frequency-channel order
       double obsbw;
       hgetr8(databuf_header, "OBSBW", &obsbw);
       hputr8(databuf_header, "OBSBW", -1.0*obsbw);
       #else
-      hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS); // beams are split into separate files...
+      hputi4(databuf_header, "NCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
+      hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
       #endif
+      hputr8(databuf_header, "TBIN", tbin);
     }
 
     // hashpipe_info(thread_name, "batched block #%d as input #%d.", curblock_in, inputs_batched);
