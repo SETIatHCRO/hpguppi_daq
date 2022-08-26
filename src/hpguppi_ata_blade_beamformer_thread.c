@@ -523,31 +523,27 @@ static void *run(hashpipe_thread_args_t *args)
 
       const int npol = BLADE_ATA_CONFIG.numberOfOutputPolarizations;
       const int nbeams = BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0);
-      const int nfreq = BLADE_ATA_CONFIG.inputDims.NCHANS;
-      const int ntime = BLADE_ATA_CONFIG.inputDims.NTIME / BLADE_ATA_CONFIG.integrationSize;
+      const int nfreq = BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate;
+      const int ntime = BLADE_ATA_CONFIG.inputDims.NTIME / (BLADE_ATA_CONFIG.integrationSize * BLADE_ATA_CONFIG.channelizerRate);
       int b,f,t,p;
 
-      for (b = 0; b < nbeams; b++)
-      {
-        for (f = 0; f < nfreq; f++)
-        {
-            for (t = 0; t < ntime; t++)
-            {
-                for (p = 0; p < npol; p++)
-                {
-                    tpf_output[
-                        ((  b *ntime
-                          + t)*npol
-                          + p)*nfreq
-                          + f
-                    ] = ftp_output[
-                        ((  b *nfreq
-                          + f)*ntime
-                          + t)*npol
-                          + p
-                    ];
-                }
+      for(b = 0; b < nbeams; b++) {
+        for(f = 0; f < nfreq; f++) {
+          for(t = 0; t < ntime; t++) {
+            for(p = 0; p < npol; p++) {
+              tpf_output[
+                  ((  b *ntime
+                    + t)*npol
+                    + p)*nfreq
+                    - f + nfreq-1 // filterbank files typically are frequency descending
+              ] = ftp_output[
+                  ((  b *nfreq
+                    + f)*ntime
+                    + t)*npol
+                    + p
+              ];
             }
+          }
         }
       }
       #endif
