@@ -103,7 +103,8 @@ bool blade_ata_b_initialize(
 
     const size_t weightsPolStride = 1;
     const size_t weightsChnStride = config.beamformerNumberOfPolarizations * weightsPolStride;
-    const size_t weightsAntStride = config.beamformerNumberOfFrequencyChannels * weightsChnStride;
+    const size_t weightsAntStride = config.beamformerNumberOfFrequencyChannels * config.preBeamformerChannelizerRate * weightsChnStride;
+    BL_INFO("Expanding the {} coarse-channel coefficients by a factor of {}.", config.beamformerNumberOfFrequencyChannels, config.preBeamformerChannelizerRate);
 
     for (U64 antIdx = 0; antIdx < config.beamformerNumberOfAntennas; antIdx++) {
         for (U64 chnIdx = 0; chnIdx < config.beamformerNumberOfFrequencyChannels; chnIdx++) {
