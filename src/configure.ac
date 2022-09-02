@@ -43,7 +43,7 @@ AX_CHECK_IBVERBS
 AX_CHECK_SLA
 
 # Check for rawspec
-AX_CHECK_RAWSPEC
+# AX_CHECK_RAWSPEC
 
 # Check for xgpu
 AX_CHECK_XGPU
@@ -59,6 +59,9 @@ AX_CHECK_UVH5C99
 
 # Check for radiointerferometry
 AX_CHECK_RADIOINTERFEROMETRY99
+
+# Check for filterbankh5
+AX_CHECK_FILTERBANKH5C99
 
 # Checks for libraries.
 #AC_CHECK_LIB([pthread], [pthread_create])
