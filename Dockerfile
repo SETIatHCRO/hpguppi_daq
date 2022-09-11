@@ -1,148 +1,7 @@
 # syntax=docker/dockerfile:1
 
-####v Rawspec Builder v####
-FROM nvidia/cuda:11.4.2-devel-ubuntu20.04 AS rawspec_builder
-# RUN apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/3bf863cc.pub
-# RUN  apt-get update --fix-missing
-
-ARG DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update -y && apt-get install -y \
-    git \
-    libhdf5-dev \
-    linux-tools-generic \
-    pkg-config
-
-ENV CUDA_ROOT=/usr/local/cuda
-# # https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#runfile
-# RUN ​​wget https://developer.download.nvidia.com/compute/cuda/11.4.1/local_installers/cuda_11.4.1_470.57.02_linux.run \
-# && sh ./cuda_11.4.1_470.57.02_linux.run --silent --driver --toolkit --toolkitpath=/usr/local/cuda-11.4.1 
-WORKDIR /work
-
-RUN cd /work \
-&& git clone -b seti https://github.com/MydonSolutions/rawspec \
-&& cd rawspec \
-&& make
-####^ Rawspec Builder ^####
-
-####v BLADE Builder v####
-FROM nvidia/cuda:11.4.2-devel-ubuntu20.04 AS blade_builder
-# RUN apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/3bf863cc.pub
-# RUN  apt-get update --fix-missing
-
-ARG DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update -y && apt-get install -y \
-    g++-10 \
-    gcc-10 \
-    git \
-    liberfa-dev \
-    libfmt-dev \
-    libhdf5-dev \
-    libspdlog-dev \
-    linux-tools-generic \
-    pkg-config \
-    python3-pip \
-    libpq-dev
-
-RUN python3 -m pip install meson ninja
-
-ENV CUDA_ROOT=/usr/local/cuda
-# # https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#runfile
-# RUN ​​wget https://developer.download.nvidia.com/compute/cuda/11.4.1/local_installers/cuda_11.4.1_470.57.02_linux.run \
-# && sh ./cuda_11.4.1_470.57.02_linux.run --silent --driver --toolkit --toolkitpath=/usr/local/cuda-11.4.1 
-WORKDIR /work
-
-RUN cd /work \
-&& git clone https://github.com/luigifcruz/blade \
-&& cd blade \
-&& git submodule update --init \
-&& CC=gcc-10 CXX=g++-10 meson build -Dprefix=${PWD}/install \
-&& cd build \
-&& ninja install
-####^ BLADE Builder ^####
-
-####v Hashpipe Builder v####
-FROM ubuntu:20.04 AS hashpipe_builder
-
-ARG DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update -y && apt-get install -y \
-    gcc-10 \
-    git \
-    linux-tools-generic \
-    automake \
-    autoconf \
-    python3-pip \
-    libtool \
-    libpq-dev
-
-RUN python3 -m pip install meson ninja
-
-WORKDIR /work
-
-RUN cd /work \
-&& git clone -b seti https://github.com/MydonSolutions/hashpipe \
-&& cd hashpipe/src \
-&& git checkout 81a79e626d4fe78f3f7cc6209be45b8569fae42d \
-&& autoreconf -is \
-&& ./configure \
-&& make
-####^ Hashpipe Builder ^####
-
-####v SLA Builder v####
-FROM ubuntu:20.04 AS sla_builder
-
-ARG DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update -y && apt-get install -y \
-    gcc-10 \
-    git \
-    linux-tools-generic \
-    python3-pip \
-    gfortran \
-    libpq-dev
-
-RUN python3 -m pip install meson ninja
-
-WORKDIR /work
-
-RUN cd /work \
-&& git clone https://github.com/scottransom/pyslalib &&\
-    cd pyslalib \
-&& make libsla.so
-####^ SLA Builder ^####
-
-####v UVH5C99 Builder v####
-FROM ubuntu:20.04 AS uvh5c99_builder
-
-ARG DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update -y && apt-get install -y \
-    gcc-10 \
-    git \
-    liberfa-dev \
-    libhdf5-dev \
-    linux-tools-generic \
-    pkg-config \
-    python3-pip \
-    libpq-dev
-
-RUN python3 -m pip install meson ninja
-
-WORKDIR /work
-
-RUN cd /work \
-&& git clone https://github.com/MydonSolutions/uvh5c99 \
-&& cd uvh5c99 \
-&& git submodule update --init \
-&& meson build \
-&& cd build \
-&& ninja
-####^ UVH5C99 Builder ^####
-
-####v HPDAQ Builder v####
-FROM ubuntu:20.04 as hpdaq_builder
+####v Ubuntu builder v####
+FROM ubuntu:20.04 AS ubuntu_builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -178,10 +37,109 @@ RUN apt-get update -y && apt-get install -y \
 # LIBPostgresSQL (M1 pip install meson ninja)
     libpq-dev
 
-# setup meson build-flow tools (BLADE, UVH5)
-RUN python3 -m pip install meson ninja \
-# and yaml for the init_hpguppi.py script
-yamlpy
+RUN python3 -m pip install meson ninja
+
+####^ Ubuntu builder ^####
+
+####v Nvidia builder v####
+FROM nvidia/cuda:11.4.2-devel-ubuntu20.04 AS nvidia_builder
+# RUN apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/3bf863cc.pub
+# RUN  apt-get update --fix-missing
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -y && apt-get install -y \
+    g++-10 \
+    gcc-10 \
+    git \
+    liberfa-dev \
+    libfmt-dev \
+    libhdf5-dev \
+    libspdlog-dev \
+    linux-tools-generic \
+    pkg-config \
+    python3-pip \
+    libpq-dev
+
+RUN python3 -m pip install meson ninja
+
+# # https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#runfile
+# RUN ​​wget https://developer.download.nvidia.com/compute/cuda/11.4.1/local_installers/cuda_11.4.1_470.57.02_linux.run \
+# && sh ./cuda_11.4.1_470.57.02_linux.run --silent --driver --toolkit --toolkitpath=/usr/local/cuda-11.4.1 
+
+####^ Nvidia builder ^####
+
+####v Rawspec Builder v####
+FROM nvidia_builder AS rawspec_builder
+
+ENV CUDA_ROOT=/usr/local/cuda
+WORKDIR /work
+
+RUN cd /work \
+&& git clone -b seti https://github.com/MydonSolutions/rawspec \
+&& cd rawspec \
+&& make
+####^ Rawspec Builder ^####
+
+####v BLADE Builder v####
+FROM nvidia_builder AS blade_builder
+
+ENV CUDA_ROOT=/usr/local/cuda
+WORKDIR /work
+
+RUN cd /work \
+&& git clone https://github.com/luigifcruz/blade \
+&& cd blade \
+&& git submodule update --init \
+&& CC=gcc-10 CXX=g++-10 meson build -Dprefix=${PWD}/install \
+&& cd build \
+&& ninja install
+####^ BLADE Builder ^####
+
+####v Hashpipe Builder v####
+FROM ubuntu_builder AS hashpipe_builder
+
+WORKDIR /work
+
+RUN cd /work \
+&& git clone -b seti https://github.com/MydonSolutions/hashpipe \
+&& cd hashpipe/src \
+&& git checkout 81a79e626d4fe78f3f7cc6209be45b8569fae42d \
+&& autoreconf -is \
+&& ./configure \
+&& make
+####^ Hashpipe Builder ^####
+
+####v SLA Builder v####
+FROM ubuntu_builder AS sla_builder
+
+WORKDIR /work
+
+RUN cd /work \
+&& git clone https://github.com/scottransom/pyslalib &&\
+    cd pyslalib \
+&& make libsla.so
+####^ SLA Builder ^####
+
+####v UVH5C99 Builder v####
+FROM ubuntu_builder AS uvh5c99_builder
+
+WORKDIR /work
+
+RUN cd /work \
+&& git clone https://github.com/MydonSolutions/uvh5c99 \
+&& cd uvh5c99 \
+&& git submodule update --init \
+&& meson build \
+&& cd build \
+&& ninja
+####^ UVH5C99 Builder ^####
+
+####v HPDAQ Builder v####
+FROM ubuntu_builder as hpdaq_builder
+
+# yaml for the init_hpguppi.py script
+RUN python3 -m pip install yamlpy
 
 # Install dependencies
 WORKDIR /work
