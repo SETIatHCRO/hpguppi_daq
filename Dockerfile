@@ -69,18 +69,6 @@ RUN python3 -m pip install meson ninja
 
 ####^ Nvidia builder ^####
 
-####v Rawspec Builder v####
-FROM nvidia_builder AS rawspec_builder
-
-ENV CUDA_ROOT=/usr/local/cuda
-WORKDIR /work
-
-RUN cd /work \
-&& git clone -b seti https://github.com/MydonSolutions/rawspec \
-&& cd rawspec \
-&& make
-####^ Rawspec Builder ^####
-
 ####v BLADE Builder v####
 FROM nvidia_builder AS blade_builder
 
@@ -135,6 +123,20 @@ RUN cd /work \
 && ninja
 ####^ UVH5C99 Builder ^####
 
+####v FILTERBANKH5C99 Builder v####
+FROM ubuntu_builder AS filterbankh5c99_builder
+
+WORKDIR /work
+
+RUN cd /work \
+&& git clone https://github.com/MydonSolutions/filterbankh5c99 \
+&& cd filterbankh5c99 \
+&& git submodule update --init \
+&& meson build -Dprefix=/work/filterbankh5c99/install \
+&& cd build \
+&& ninja install
+####^ FILTERBANKH5C99 Builder ^####
+
 ####v HPDAQ Builder v####
 FROM ubuntu_builder as hpdaq_builder
 
@@ -169,17 +171,17 @@ RUN cd /work \
     --with-hashpipestatus-lib=/work/hashpipe/src/.libs \
 && gem install curses
 
-## Rawspec
-COPY --from=rawspec_builder /work/rawspec /work/rawspec
-
 ## BLADE
 COPY --from=blade_builder /work/blade /work/blade
 
 ## SLA
 COPY --from=sla_builder /work/pyslalib /work/pyslalib
 
-## UVHC99
+## UVH5C99
 COPY --from=uvh5c99_builder /work/uvh5c99 /work/uvh5c99
+
+## FILTERBANKH5C99
+COPY --from=filterbankh5c99_builder /work/filterbankh5c99 /work/filterbankh5c99
 
 ## Hpguppi_daq
 COPY . /work/hpguppi_daq
@@ -193,7 +195,7 @@ RUN cd /work/hpguppi_daq/src \
     --with-sla-lib=/work/pyslalib \
     --with-hashpipe=/work/hashpipe/src/.libs \
     --with-cuda-include=/usr/local/cuda-11.4.1/include \
-    --with-rawspec=/work/rawspec \
+    --with-filterbankh5c99=/work/filterbankh5c99/install \
 && make
 #   --with-uvh5=/work/uvh5c99/build \
 #   --with-xgpu=/work/xGPU/src \ # without xgpu due to container lacking gpu
