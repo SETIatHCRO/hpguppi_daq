@@ -3,8 +3,9 @@
 
 #define BLADE_ATA_MODE_A 0
 #define BLADE_ATA_MODE_B 1
+#define BLADE_ATA_MODE_H 2
 
-#define BLADE_ATA_MODE BLADE_ATA_MODE_B
+#define BLADE_ATA_MODE BLADE_ATA_MODE_H
 
 #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
 #include "hpguppi_blade_ata_mode_a_config.h"
@@ -55,6 +56,31 @@
 #define blade_ata_terminate blade_ata_b_terminate
 
 #endif // BLADE_ATA_MODE_B
+
+#if BLADE_ATA_MODE == BLADE_ATA_MODE_H
+#include "hpguppi_blade_ata_mode_h_config.h"
+#include "hpguppi_blade_ata_mode_h_capi.h"
+
+#define BLADE_ATA_CONFIG BLADE_ATA_MODE_H_CONFIG
+#define BLADE_BLOCK_OUTPUT_DATA_SIZE BLADE_ATA_MODE_H_OUTPUT_DATA_SIZE
+#define BLADE_BLOCK_DATA_SIZE BLADE_ATA_MODE_H_DATA_SIZE
+#define BLADE_ATA_OUTPUT_ELEMENT_BYTES BLADE_ATA_MODE_H_OUTPUT_N_BYTES
+#define BLADE_ATA_INPUT_NANT BLADE_ATA_MODE_H_INPUT_NANT
+#define BLADE_ATA_OUTPUT_NBEAM BLADE_ATA_MODE_H_OUTPUT_NBEAM
+#define BLADE_ATA_OUTPUT_INCOHERENT_BEAM BLADE_ATA_MODE_H_OUTPUT_INCOHERENT_BEAM
+
+#define BLADE_ATA_OUTPUT_NBITS BLADE_ATA_OUTPUT_ELEMENT_BYTES*8
+#define BLADE_ATA_OUTPUT_SAMPLE_TYPE "F32"
+
+#define blade_ata_initialize blade_ata_h_initialize
+#define blade_ata_get_input_size blade_ata_h_get_input_size
+#define blade_ata_get_output_size blade_ata_h_get_output_size
+
+#define blade_ata_enqueue blade_ata_h_enqueue_b
+#define blade_ata_dequeue blade_ata_h_dequeue_h
+#define blade_ata_terminate blade_ata_h_terminate
+
+#endif // BLADE_ATA_MODE_H
 
 
 #endif // _HPGUPPI_ATA_BLADE_MODE_H_

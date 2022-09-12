@@ -118,7 +118,7 @@ static void *run(hashpipe_thread_args_t *args)
   /* BLADE variables */
   const size_t batch_size = 2;
   int input_output_blockid_pairs[N_INPUT_BLOCKS]; // input_id indexed associated output_id
-  #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
+  #if BLADE_ATA_MODE == BLADE_ATA_MODE_A || BLADE_ATA_MODE == BLADE_ATA_MODE_H
   float* ftp_outputblocks[N_INPUT_BLOCKS];
   for(size_t i = 0; i < N_INPUT_BLOCKS; i++){
     ftp_outputblocks[i] = malloc(BLADE_BLOCK_OUTPUT_DATA_SIZE);
@@ -192,6 +192,11 @@ static void *run(hashpipe_thread_args_t *args)
   int64_t pktidx_obs_start, pktidx_obs_start_prev, pktidx_blk_start;
   int fenchan;
   double tbin;
+  double obsbw;
+  #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
+  size_t accumulator_counter, block_stop_pktidx;
+  #elif BLADE_ATA_MODE == BLADE_ATA_MODE_A
+  #endif
   double timejd_midblock=0, dut1=0;
 
   while (run_threads())
@@ -449,6 +454,9 @@ static void *run(hashpipe_thread_args_t *args)
 
     // Asynchronously queue
     input_output_blockid_pairs[curblock_in] = curblock_out;
+    #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
+      accumulator_counter = blade_ata_h_accumulator_counter();
+    #endif
     while(!
       blade_ata_enqueue(
         (void*) hpguppi_databuf_data(indb, curblock_in),
@@ -456,6 +464,7 @@ static void *run(hashpipe_thread_args_t *args)
         (void*) ftp_outputblocks[curblock_out],
         #elif BLADE_ATA_MODE == BLADE_ATA_MODE_B
         (void*) hpguppi_databuf_data(outdb, curblock_out),
+        #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
         #endif
         curblock_in,
         timejd_midblock,
@@ -474,10 +483,23 @@ static void *run(hashpipe_thread_args_t *args)
     {// Asynchronous CPU work 
       // copy across the header
       databuf_header = hpguppi_databuf_header(outdb, curblock_out);
-      memcpy(databuf_header, 
-            hpguppi_databuf_header(indb, curblock_in), 
-            BLOCK_HDR_SIZE);
-      
+
+      #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
+        if(accumulator_counter == 0) {
+          memcpy(databuf_header, 
+                hpguppi_databuf_header(indb, curblock_in), 
+                BLOCK_HDR_SIZE);
+        }
+        else {
+          hgetu8(hpguppi_databuf_header(indb, curblock_in), "BLKSTOP", &block_stop_pktidx);
+          hputu8(databuf_header, "BLKSTOP", block_stop_pktidx);
+        }
+      #else
+        memcpy(databuf_header, 
+              hpguppi_databuf_header(indb, curblock_in), 
+              BLOCK_HDR_SIZE);
+      #endif
+
       //TODO upate output_buffer headers to reflect that they contain beams
       hputi4(databuf_header, "INCOBEAM", (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
       hputi4(databuf_header, "NBEAM", BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
@@ -487,44 +509,80 @@ static void *run(hashpipe_thread_args_t *args)
       hputi4(databuf_header, "BLOCSIZE", BLADE_BLOCK_DATA_SIZE);
 
       hgetr8(databuf_header, "TBIN", &tbin);
-      tbin *= BLADE_ATA_CONFIG.channelizerRate;
+      hgetr8(databuf_header, "OBSBW", &obsbw);
 
       #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
       // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
       hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*(BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0))); 
       hputi4(databuf_header, "NPOL", BLADE_ATA_CONFIG.numberOfOutputPolarizations);
-      
+
+      tbin *= BLADE_ATA_CONFIG.channelizerRate;
       tbin *= BLADE_ATA_CONFIG.integrationSize;
       
       // negate OBSBW to indicate descending frequency-channel order
-      double obsbw;
-      hgetr8(databuf_header, "OBSBW", &obsbw);
-      hputr8(databuf_header, "OBSBW", -1.0*obsbw);
+      obsbw *= -1.0;
+
+      #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
+      if (accumulator_counter == 0) {
+        // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
+        hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME*(BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0))); 
+        hputi4(databuf_header, "NTIME", 1); // accumulation limits output to NTIME dimension-length of 1
+        hputi4(databuf_header, "NPOL", BLADE_ATA_CONFIG.numberOfOutputPolarizations);
+
+        tbin *= BLADE_ATA_CONFIG.channelizerRate;
+        tbin *= BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
+        
+        // negate OBSBW to indicate descending frequency-channel order
+        obsbw *= -1.0;
+      }
+
       #else
       hputi4(databuf_header, "NCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
       hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
       #endif
+
       hputr8(databuf_header, "TBIN", tbin);
+      hputr8(databuf_header, "OBSBW", obsbw);
     }
 
     // hashpipe_info(thread_name, "batched block #%d as input #%d.", curblock_in, inputs_batched);
     curblock_in  = (curblock_in + 1) % indb->header.n_block;
-    // hashpipe_info(thread_name, "batched block #%d as output #%d.", curblock_out, outputs_batched);
-    curblock_out = (curblock_out + 1) % outdb->header.n_block;
+
+    #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
+      while(blade_ata_h_dequeue_b(&dequeued_input_id)) {
+        hpguppi_databuf_set_free(indb, dequeued_input_id);
+        if(blade_ata_h_enqueue_h((void*) ftp_outputblocks[curblock_out], curblock_out)){
+          // hashpipe_info(thread_name, "batched block #%d as output #%d.", curblock_out, outputs_batched);
+          curblock_out = (curblock_out + 1) % outdb->header.n_block;
+        }
+      }
+    #elif BLADE_ATA_MODE != BLADE_ATA_MODE_H
+      // hashpipe_info(thread_name, "batched block #%d as output #%d.", curblock_out, outputs_batched);
+      curblock_out = (curblock_out + 1) % outdb->header.n_block;
+    #endif
 
     // Dequeue all completed buffers
     while (blade_ata_dequeue(&dequeued_input_id))
     {
-      hpguppi_databuf_set_free(indb, dequeued_input_id);
-      #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
-      // Mode A has filterbank outputs, so transpose the binary data to suit that of .fil files
-      float* ftp_output = ftp_outputblocks[input_output_blockid_pairs[dequeued_input_id]];
-      float* tpf_output = (float*) hpguppi_databuf_data(outdb, input_output_blockid_pairs[dequeued_input_id]);
-
+      #if BLADE_ATA_MODE != BLADE_ATA_MODE_H
+        hpguppi_databuf_set_free(indb, dequeued_input_id);
+      #endif
+      #if BLADE_ATA_MODE == BLADE_ATA_MODE_A || BLADE_ATA_MODE == BLADE_ATA_MODE_H
+      // Mode A/H has filterbank outputs, so transpose the binary data to suit that of .fil files
       const int npol = BLADE_ATA_CONFIG.numberOfOutputPolarizations;
       const int nbeams = BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0);
+
+      #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
+      float* ftp_output = ftp_outputblocks[input_output_blockid_pairs[dequeued_input_id]];
+      float* tpf_output = (float*) hpguppi_databuf_data(outdb, input_output_blockid_pairs[dequeued_input_id]);
       const int nfreq = BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate;
       const int ntime = BLADE_ATA_CONFIG.inputDims.NTIME / (BLADE_ATA_CONFIG.integrationSize * BLADE_ATA_CONFIG.channelizerRate);
+      #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
+      float* ftp_output = ftp_outputblocks[dequeued_input_id];
+      float* tpf_output = (float*) hpguppi_databuf_data(outdb, dequeued_input_id);
+      const int nfreq = BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
+      const int ntime = 1;
+      #endif
       int b,f,t,p;
 
       for(b = 0; b < nbeams; b++) {
@@ -548,8 +606,12 @@ static void *run(hashpipe_thread_args_t *args)
       }
       #endif
 
+      #if BLADE_ATA_MODE != BLADE_ATA_MODE_H
       hpguppi_databuf_set_filled(outdb, input_output_blockid_pairs[dequeued_input_id]);
       input_output_blockid_pairs[dequeued_input_id] = -1;
+      #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
+      hpguppi_databuf_set_filled(outdb, dequeued_input_id);
+      #endif
 
       // Update moving sum (for moving average)
       clock_gettime(CLOCK_MONOTONIC, &ts_free_input);
