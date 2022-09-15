@@ -58,11 +58,24 @@ bool blade_ata_a_initialize(
     double* antennaPositions_xyz,
     double _Complex* antennaCalibrations
 );
-size_t blade_ata_a_get_input_size();
 size_t blade_ata_a_get_output_size();
 
-bool blade_ata_a_enqueue(void* input_ptr, void* output_ptr, size_t id, double time_mjd, double dut1);
-bool blade_ata_a_dequeue(size_t* id);
+void blade_ata_a_set_block_time_mjd(double mjd);
+void blade_ata_a_set_block_dut1(double dut1);
+
+void blade_ata_a_register_user_data(void* user_data);
+void blade_ata_a_register_input_buffer_prefetch_cb(blade_stateful_cb* f);
+void blade_ata_a_register_input_buffer_fetch_cb(blade_input_buffer_fetch_cb* f);
+void blade_ata_a_register_input_buffer_enqueued_cb(blade_input_buffer_enqueued_cb* f);
+void blade_ata_a_register_input_buffer_ready_cb(blade_input_buffer_ready_cb* f);
+void blade_ata_a_register_output_buffer_fetch_cb(blade_output_buffer_fetch_cb* f);
+void blade_ata_a_register_output_buffer_ready_cb(blade_output_buffer_ready_cb* f);
+
+void blade_ata_a_register_blade_queued_input_clear_cb(blade_clear_queued_cb* f);
+void blade_ata_a_register_blade_queued_output_clear_cb(blade_clear_queued_cb* f);
+
+bool blade_ata_a_compute_step();
+
 void blade_ata_a_terminate();
 
 #endif

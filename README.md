@@ -81,11 +81,11 @@ $ make clean && make NTIME=32768 NTIME_PIPE=128 NPOL=2 NFREQUENCY=512 NSTATION=1
 
 ## [BLADE](https://github.com/luigifcruz/blade)
 
-Beamforming is accomplished with BLADE empowered threads:
+Beamforming is accomplished with BLADE (^0.7.0) empowered threads:
 - hpguppi_ata_blade_beamformer_thread
 
 ```
-$ git clone https://github.com/luigifcruz/blade
+$ git clone -b blade-cli https://github.com/luigifcruz/blade
 $ cd blade
 $ CC=gcc-10 CXX=g++-10 meson build -Dprefix=${PWD}/install
 $ cd build

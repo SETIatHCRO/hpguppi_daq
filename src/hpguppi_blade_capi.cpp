@@ -15,5 +15,5 @@ bool blade_use_device(int device_id) {
 }
 
 bool blade_pin_memory(void* buffer, size_t size) {
-    return Memory::PageLock(Vector<Device::CPU, I8>(buffer, size)) == Result::SUCCESS;
+    return Memory::PageLock(Vector<Device::CPU, I8>(buffer, {size})) == Result::SUCCESS;
 }

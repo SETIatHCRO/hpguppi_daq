@@ -74,6 +74,9 @@ hpguppi_blade_c_api_files = \
 		hpguppi_blade_ata_mode_a_capi.cpp \
 		hpguppi_blade_ata_mode_a_capi.h \
 		hpguppi_blade_ata_mode_a_config.h \
+		hpguppi_blade_ata_mode_h_capi.cpp \
+		hpguppi_blade_ata_mode_h_capi.h \
+		hpguppi_blade_ata_mode_h_config.h \
 		hpguppi_blade_ata_mode_b_capi.cpp \
 		hpguppi_blade_ata_mode_b_capi.h \
 		hpguppi_blade_ata_mode_b_config.h

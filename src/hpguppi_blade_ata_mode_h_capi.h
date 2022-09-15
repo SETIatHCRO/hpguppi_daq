@@ -58,15 +58,27 @@ bool blade_ata_h_initialize(
     double* antennaPositions_xyz,
     double _Complex* antennaCalibrations
 );
+
 size_t blade_ata_h_get_input_size();
 size_t blade_ata_h_get_output_size();
 
+void blade_ata_h_set_block_time_mjd(double mjd);
+void blade_ata_h_set_block_dut1(double dut1);
+
+void blade_ata_h_register_user_data(void* user_data);
+void blade_ata_h_register_input_buffer_prefetch_cb(blade_stateful_cb* f);
+void blade_ata_h_register_input_buffer_fetch_cb(blade_input_buffer_fetch_cb* f);
+void blade_ata_h_register_input_buffer_enqueued_cb(blade_input_buffer_enqueued_cb* f);
+void blade_ata_h_register_input_buffer_ready_cb(blade_input_buffer_ready_cb* f);
+void blade_ata_h_register_output_buffer_fetch_cb(blade_output_buffer_fetch_cb* f);
+void blade_ata_h_register_output_buffer_ready_cb(blade_output_buffer_ready_cb* f);
+
+void blade_ata_h_register_blade_queued_input_clear_cb(blade_clear_queued_cb* f);
+void blade_ata_h_register_blade_queued_output_clear_cb(blade_clear_queued_cb* f);
+
 size_t blade_ata_h_accumulator_counter();
 
-bool blade_ata_h_enqueue_b(void* input_ptr, const size_t b_id, double time_mjd, double dut1);
-bool blade_ata_h_dequeue_b(size_t* b_id);
-bool blade_ata_h_enqueue_h(void* output_ptr, const size_t h_id);
-bool blade_ata_h_dequeue_h(size_t* id);
+bool blade_ata_h_compute_step();
 
 void blade_ata_h_terminate();
 

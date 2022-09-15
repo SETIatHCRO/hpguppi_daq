@@ -16,7 +16,40 @@
 #include "radiointerferometryc99.h"
 #include "antenna_weights.h"
 
-double jd_mid_block(char* databuf_header){
+typedef struct {
+    const int blade_number_of_workers;
+
+    hashpipe_status_t* status;
+
+    const char* thread_name;
+    const char* status_key;
+    char status_state;
+    struct timespec ts_last_status_update;
+    struct timespec ts_buffer_wait_timeout;
+
+    int32_t prev_flagged_NANTS;
+    int32_t prev_flagged_NCHAN;
+    int32_t prev_flagged_NTIME;
+    int32_t prev_flagged_NPOLS;
+    int64_t prev_pktidx_obs_start;
+
+    size_t accumulator_counter;
+
+    size_t in_index;
+    size_t out_index_free;
+    size_t out_index_fill;
+
+    hpguppi_input_databuf_t* in;
+    hpguppi_blade_output_databuf_t* out;
+
+    void* out_intermediary[N_INPUT_BLOCKS];
+
+    uint64_t fill_to_free_moving_sum_ns;
+    uint64_t fill_to_free_block_ns[N_INPUT_BLOCKS];
+    struct timespec ts_blocks_recvd[N_INPUT_BLOCKS];
+} blade_userdata_t;
+
+double jd_mid_block(char* databuf_header) {
   uint64_t pktidx, piperblk;
   struct mjd_t mjd = {0};
   uint64_t synctime = 0;
@@ -25,7 +58,7 @@ double jd_mid_block(char* databuf_header){
   double realtime_secs = 0.0;
   struct timespec ts;
 
-  
+
   hgetu8(databuf_header, "PKTIDX", &pktidx);
   hgetu8(databuf_header, "PIPERBLK", &piperblk);
   hgetr8(databuf_header, "CHAN_BW", &chan_bw);
@@ -36,7 +69,7 @@ double jd_mid_block(char* databuf_header){
   //                          pktidx
   //     realtime_secs = -------------------
   //                        1e6 * chan_bw
-  if(chan_bw != 0.0) {
+  if (chan_bw != 0.0) {
     realtime_secs = (pktidx + piperblk/2) / (1e6 * fabs(chan_bw));
   }
 
@@ -51,9 +84,12 @@ double jd_mid_block(char* databuf_header){
 }
 
 // Populates `beam_coordinates` which should be nbeams*2 long (RA/DEC_OFFX pairs)
-void collect_beamCoordinates(int nbeams, double* beam_coordinates,
-    double* phase_center,
-    char* databuf_header) {
+void collect_beamCoordinates(
+  int nbeams,
+  double* beam_coordinates,
+  double* phase_center,
+  char* databuf_header
+) {
 
   // Getting phase center
   hgetr8(databuf_header, "RA_STR",  phase_center+0);
@@ -75,555 +111,565 @@ void collect_beamCoordinates(int nbeams, double* beam_coordinates,
   }
 }
 
+bool blade_cb_input_buffer_prefetch(void* user_data_void) {
+  blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
 
-static void *run(hashpipe_thread_args_t *args)
-{
-  hpguppi_input_databuf_t *indb  = (hpguppi_input_databuf_t *)args->ibuf;
-  hpguppi_blade_output_databuf_t *outdb = (hpguppi_blade_output_databuf_t *)args->obuf;
-  char * databuf_header;
-
-  hashpipe_status_t st = args->st;
-  const char* status_key = args->thread_desc->skey;
-  const char* thread_name = args->thread_desc->name;
+  struct timespec ts_now;
   char buf_status[80];
-  
-  int curblock_in=0;
-  int curblock_out=0;
-  size_t i;
 
-  /* Sundry flags */
-  int hpguppi_databuf_wait_rv, status_state=0, update_status=1;
+  {// poll once for an incoming block
+    int hpguppi_databuf_wait_rv = hpguppi_databuf_wait_filled_timeout(
+      user_data->in, user_data->in_index,
+      &user_data->ts_buffer_wait_timeout
+    );
 
-  /* Timestamp variables */
-  struct timespec ts_status_update = {0}, ts_now = {0};
-  const uint64_t status_update_period_ns = 1e9;
-  
-  uint64_t fill_to_free_elapsed_ns;
-  uint64_t fill_to_free_moving_sum_ns = 0;
-  uint64_t fill_to_free_block_ns[N_INPUT_BLOCKS] = {0};
-  struct timespec ts_free_input = {0};
-  struct timespec ts_blocks_recvd[N_INPUT_BLOCKS] = {0};
+    clock_gettime(CLOCK_MONOTONIC, &ts_now);
+    // We perform some status buffer updates every second
+    if (ELAPSED_NS(user_data->ts_last_status_update, ts_now) > 1e9) {
+      sprintf(buf_status, "%d/%d", hpguppi_databuf_total_status(user_data->out), user_data->in->header.n_block);
+      memcpy(&user_data->ts_last_status_update, &ts_now, sizeof(struct timespec));
 
-  char indb_data_dims_good_flag = 0;
+      hashpipe_status_lock_safe(user_data->status);
+      {
+        if (user_data->status_state != 1) {
+          hputs(user_data->status->buf, user_data->status_key, "inblocked");
+          user_data->status_state=1;
+        }
 
-  /* UVH5 header variables*/
-	UVH5_header_t uvh5_header = {0};
-  char tel_info_toml_filepath[70] = {'\0'};
-  char obs_info_toml_filepath[70] = {'\0'};
-  double obs_antenna_positions[BLADE_ATA_INPUT_NANT*3] = {0}, obs_beam_coordinates[BLADE_ATA_OUTPUT_NBEAM*2] = {0};
-  double obs_phase_center[2] = {0};
-  struct blade_ata_observation_meta observationMetaData = {0};
-  struct LonLatAlt arrayReferencePosition = {0};
-  
-  /* BLADE variables */
-  const size_t batch_size = 2;
-  int input_output_blockid_pairs[N_INPUT_BLOCKS]; // input_id indexed associated output_id
-  #if BLADE_ATA_MODE == BLADE_ATA_MODE_A || BLADE_ATA_MODE == BLADE_ATA_MODE_H
-  float* ftp_outputblocks[N_INPUT_BLOCKS];
-  for(size_t i = 0; i < N_INPUT_BLOCKS; i++){
-    ftp_outputblocks[i] = malloc(BLADE_BLOCK_OUTPUT_DATA_SIZE);
-  }
-  #endif
-  memset(input_output_blockid_pairs, -1, sizeof(int)*N_INPUT_BLOCKS);
-  size_t dequeued_input_id = 0;
-
-  double _Complex* antenna_calibration_coeffs;
-  char obs_antenna_calibration_filepath[70] = {'\0'};
-  char** obs_antenna_names = NULL;
-  
-  int cudaDeviceId = args->instance_id;
-  
-  hashpipe_status_lock_safe(&st);
-  {
-    hgeti4(st.buf, "CUDADEV", &cudaDeviceId);
-  }
-  hashpipe_status_unlock_safe(&st);
-  if(cudaDeviceId >= 0){
-    if(blade_use_device(cudaDeviceId)){
-      hashpipe_info(args->thread_desc->name, "Successfully set CUDA device to %d.", cudaDeviceId);
+        hputi4(user_data->status->buf, "BLDBLKSZ", BLADE_BLOCK_DATA_SIZE);
+        hputs(user_data->status->buf, "BLDBUFST", buf_status);
+        hputr4(user_data->status->buf, "BLDBLKMS",
+          round(
+            (double)(user_data->fill_to_free_moving_sum_ns)
+            / (user_data->blade_number_of_workers * N_INPUT_BLOCKS)
+          ) / 1e6
+        );
+      }
+      hashpipe_status_unlock_safe(user_data->status);
     }
-    else{
-      hashpipe_info(args->thread_desc->name, "Failed to set CUDA device to %d.", cudaDeviceId);
-      cudaDeviceId = -1;
+
+    if (hpguppi_databuf_wait_rv == HASHPIPE_TIMEOUT) {
+      return false;
+    }
+    else if (hpguppi_databuf_wait_rv != HASHPIPE_TIMEOUT && hpguppi_databuf_wait_rv != HASHPIPE_OK) {
+      hashpipe_error(user_data->thread_name, "error status_state for input buffer, rv: %i", hpguppi_databuf_wait_rv);
+      pthread_exit(NULL);
+      return false;
     }
   }
-  hashpipe_status_lock_safe(&st);
-  {
-    hputi4(st.buf, "CUDADEV", cudaDeviceId);
-    hputi4(st.buf, "BLDBLKSZ", BLADE_BLOCK_DATA_SIZE);
-  }
-  hashpipe_status_unlock_safe(&st);
 
-  //XXX Replace by actual calibration
-  size_t size_of_calib = 20*192*2; //20 ants, 192chans, 2pol, HARCODED!!!!
-  antenna_calibration_coeffs = 
-    (double _Complex*) malloc(size_of_calib*sizeof (*antenna_calibration_coeffs));
+  char* databuf_header = hpguppi_databuf_header(user_data->in, user_data->in_index);
 
-  for (size_t i; i<size_of_calib; i++)
-    antenna_calibration_coeffs[i] = 1.0 + 0.0*I;
+  {// validate apparent dimensions of data
+    int32_t input_buffer_dim_NANTS = 0;
+    int32_t input_buffer_dim_NCHAN = 0;
+    int32_t input_buffer_dim_NTIME = 0;
+    int32_t input_buffer_dim_NPOLS = 0;
 
-  blade_ata_initialize(
-    BLADE_ATA_CONFIG,
-    batch_size,
-    &observationMetaData,
-    &arrayReferencePosition,
-    obs_phase_center,
-    obs_beam_coordinates,
-    obs_antenna_positions,
-    antenna_calibration_coeffs
-  );
-
-  if(BLADE_BLOCK_DATA_SIZE != blade_ata_get_output_size()*BLADE_ATA_OUTPUT_ELEMENT_BYTES){
-    hashpipe_error(thread_name, "BLADE_BLOCK_DATA_SIZE %lu != %lu BLADE configured output size.", BLADE_BLOCK_DATA_SIZE, blade_ata_get_output_size()*BLADE_ATA_OUTPUT_ELEMENT_BYTES);
-    pthread_exit(NULL);
-  }
-
-  for(i = 0; i < N_INPUT_BLOCKS; i++)
-  {
-    blade_pin_memory(hpguppi_databuf_data(indb, i), BLOCK_DATA_SIZE);
-    blade_pin_memory(hpguppi_databuf_data(outdb, i), BLADE_BLOCK_DATA_SIZE);
-  }
-
-  int32_t input_buffer_dim_NANTS = 0, prev_flagged_NANTS = 0;
-  int32_t input_buffer_dim_NCHAN = 0, prev_flagged_NCHAN = 0;
-  int32_t input_buffer_dim_NTIME = 0, prev_flagged_NTIME = 0;
-  int32_t input_buffer_dim_NPOLS = 0, prev_flagged_NPOLS = 0;
-
-  int64_t pktidx_obs_start, pktidx_obs_start_prev, pktidx_blk_start;
-  int fenchan;
-  double tbin;
-  double obsbw;
-  #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
-  size_t accumulator_counter, block_stop_pktidx;
-  #elif BLADE_ATA_MODE == BLADE_ATA_MODE_A
-  #endif
-  double timejd_midblock=0, dut1=0;
-
-  while (run_threads())
-  {
-    do {
-      hpguppi_databuf_wait_rv = hpguppi_databuf_wait_filled(
-          indb, curblock_in);
-      
-      clock_gettime(CLOCK_MONOTONIC, &ts_now);
-
-      update_status = ELAPSED_NS(ts_status_update, ts_now) > status_update_period_ns;
-
-      if(hpguppi_databuf_wait_rv == HASHPIPE_TIMEOUT && !update_status) {
-        // No, continue receiving
-        continue;
-      }
-
-      // We perform some status buffer updates every second
-      if(update_status) {
-        sprintf(buf_status, "%d/%d", hpguppi_databuf_total_status(outdb), N_INPUT_BLOCKS);
-
-        hashpipe_status_lock_safe(&st);
-        {
-          hputi4(st.buf, "BLDBLKSZ", BLADE_BLOCK_DATA_SIZE);
-          hputs(st.buf, "BLDBUFST", buf_status);
-          hputr4(st.buf, "BLDBLKMS",
-            round((double)fill_to_free_moving_sum_ns / N_INPUT_BLOCKS) / 1e6);
-        }
-        hashpipe_status_unlock_safe(&st);
-      }
-
-      // Set status field to "status_state" if we are not getting packets
-      if(hpguppi_databuf_wait_rv == HASHPIPE_TIMEOUT && run_threads() && !status_state) {
-        hashpipe_status_lock_safe(&st);
-        {
-          hputs(st.buf, status_key, "inblocked");
-        }
-        hashpipe_status_unlock_safe(&st);
-        status_state=1;
-      }
-      else if (hpguppi_databuf_wait_rv != HASHPIPE_TIMEOUT && hpguppi_databuf_wait_rv != HASHPIPE_OK) {
-        hashpipe_error(thread_name, "error status_state for input buffer, rv: %i", hpguppi_databuf_wait_rv);
-        pthread_exit(NULL);
-      }
-
-      // Will exit if thread has been cancelled
-      pthread_testcancel();
-    } while (hpguppi_databuf_wait_rv != HASHPIPE_OK && run_threads()); // end wait for data loop
-    
-    indb_data_dims_good_flag = 1; // innocent until proven guilty
-    databuf_header = hpguppi_databuf_header(indb, curblock_in);
+    char indb_data_dims_good_flag = 1; // innocent until proven guilty
     hgeti4(databuf_header, "NANTS", &input_buffer_dim_NANTS);
     hgeti4(databuf_header, "NCHAN", &input_buffer_dim_NCHAN);
     hgeti4(databuf_header, "PIPERBLK", &input_buffer_dim_NTIME);
     hgeti4(databuf_header, "NPOL", &input_buffer_dim_NPOLS);
 
-    if(input_buffer_dim_NANTS != BLADE_ATA_CONFIG.inputDims.NANTS){
+    if (input_buffer_dim_NANTS != BLADE_ATA_CONFIG.inputDims.NANTS) {
       indb_data_dims_good_flag = 0;
-      if(prev_flagged_NANTS != input_buffer_dim_NANTS){
-        prev_flagged_NANTS = input_buffer_dim_NANTS;
-        hashpipe_error(thread_name, "Incoming data_buffer has NANTS %lu != %lu. Ignored.", input_buffer_dim_NANTS, BLADE_ATA_CONFIG.inputDims.NANTS);
+      if (user_data->prev_flagged_NANTS != input_buffer_dim_NANTS) {
+        user_data->prev_flagged_NANTS = input_buffer_dim_NANTS;
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NANTS %lu != %lu. Ignored.", input_buffer_dim_NANTS, BLADE_ATA_CONFIG.inputDims.NANTS);
       }
     }
-    else if(input_buffer_dim_NCHAN != BLADE_ATA_CONFIG.inputDims.NCHANS){
+    else if (input_buffer_dim_NCHAN != BLADE_ATA_CONFIG.inputDims.NCHANS) {
       indb_data_dims_good_flag = 0;
-      if(prev_flagged_NCHAN != input_buffer_dim_NCHAN){
-        prev_flagged_NCHAN = input_buffer_dim_NCHAN;
-        hashpipe_error(thread_name, "Incoming data_buffer has NCHANS %lu != %lu. Ignored.", input_buffer_dim_NCHAN, BLADE_ATA_CONFIG.inputDims.NCHANS);
+      if (user_data->prev_flagged_NCHAN != input_buffer_dim_NCHAN) {
+        user_data->prev_flagged_NCHAN = input_buffer_dim_NCHAN;
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NCHANS %lu != %lu. Ignored.", input_buffer_dim_NCHAN, BLADE_ATA_CONFIG.inputDims.NCHANS);
       }
     }
-    else if(input_buffer_dim_NTIME != BLADE_ATA_CONFIG.inputDims.NTIME){
+    else if (input_buffer_dim_NTIME != BLADE_ATA_CONFIG.inputDims.NTIME) {
       indb_data_dims_good_flag = 0;
-      if(prev_flagged_NTIME != input_buffer_dim_NTIME){
-        prev_flagged_NTIME = input_buffer_dim_NTIME;
-        hashpipe_error(thread_name, "Incoming data_buffer has NTIME %lu != %lu. Ignored.", input_buffer_dim_NTIME, BLADE_ATA_CONFIG.inputDims.NTIME);
+      if (user_data->prev_flagged_NTIME != input_buffer_dim_NTIME) {
+        user_data->prev_flagged_NTIME = input_buffer_dim_NTIME;
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NTIME %lu != %lu. Ignored.", input_buffer_dim_NTIME, BLADE_ATA_CONFIG.inputDims.NTIME);
       }
     }
-    else if(input_buffer_dim_NPOLS != BLADE_ATA_CONFIG.inputDims.NPOLS){
+    else if (input_buffer_dim_NPOLS != BLADE_ATA_CONFIG.inputDims.NPOLS) {
       indb_data_dims_good_flag = 0;
-      if(prev_flagged_NPOLS != input_buffer_dim_NPOLS){
-        prev_flagged_NPOLS = input_buffer_dim_NPOLS;
-        hashpipe_error(thread_name, "Incoming data_buffer has NPOLS %lu != %lu. Ignored.", input_buffer_dim_NPOLS, BLADE_ATA_CONFIG.inputDims.NPOLS);
+      if (user_data->prev_flagged_NPOLS != input_buffer_dim_NPOLS) {
+        user_data->prev_flagged_NPOLS = input_buffer_dim_NPOLS;
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NPOLS %lu != %lu. Ignored.", input_buffer_dim_NPOLS, BLADE_ATA_CONFIG.inputDims.NPOLS);
       }
     }
 
     if (!indb_data_dims_good_flag) {
-      hpguppi_databuf_set_free(indb, curblock_in);
-      curblock_in  = (curblock_in + 1) % indb->header.n_block;
-      continue;
+      hpguppi_databuf_set_free(user_data->in, user_data->in_index);
+      user_data->in_index  = (user_data->in_index + 1) % user_data->in->header.n_block;
+      return false;
     }
-    else{
-      prev_flagged_NANTS = input_buffer_dim_NANTS;
-      prev_flagged_NCHAN = input_buffer_dim_NCHAN;
-      prev_flagged_NTIME = input_buffer_dim_NTIME;
-      prev_flagged_NPOLS = input_buffer_dim_NPOLS;
-    }
-
-    hgeti8(databuf_header, "PKTSTART", &pktidx_obs_start);
-    hgeti8(databuf_header, "BLKSTART", &pktidx_blk_start);
-
-    if(pktidx_obs_start != pktidx_obs_start_prev && pktidx_obs_start >= pktidx_blk_start){ // first block of observation
-        hgetu8(databuf_header, "SCHAN", &observationMetaData.frequencyStartIndex);
-        hgetr8(databuf_header, "CHAN_BW", &observationMetaData.channelBandwidthHz);
-        hgeti4(databuf_header, "FENCHAN", &fenchan);
-        hgetr8(databuf_header, "OBSFREQ", &observationMetaData.rfFrequencyHz);
-
-        double tmp = (double)observationMetaData.rfFrequencyHz +
-          (-(double)observationMetaData.frequencyStartIndex - ((double)input_buffer_dim_NCHAN / 2.0)
-            + ((double)fenchan / 2.0) + 0.5
-          ) * (double)observationMetaData.channelBandwidthHz;
-
-
-        observationMetaData.rfFrequencyHz = tmp;
-
-        observationMetaData.rfFrequencyHz *= 1e6;
-        observationMetaData.channelBandwidthHz *= 1e6;
-        observationMetaData.totalBandwidthHz = fenchan * observationMetaData.channelBandwidthHz;
-
-        if(obs_antenna_names){
-          free(obs_antenna_names);
-        }
-
-        hashpipe_status_lock_safe(&st);
-        {
-          hgets(st.buf, "TELINFOP", 70, tel_info_toml_filepath);
-          hgets(st.buf, "OBSINFOP", 70, obs_info_toml_filepath);
-          hgets(st.buf, "CALWGHTP", 70, obs_antenna_calibration_filepath);
-        }
-        hashpipe_status_unlock_safe(&st);
-
-        hashpipe_info(thread_name, "Parsing '%s' as Telescope information.", tel_info_toml_filepath);
-        UVH5toml_parse_telescope_info(tel_info_toml_filepath, &uvh5_header);
-        hashpipe_info(thread_name, "Parsing '%s' as Observation information.", obs_info_toml_filepath);
-        UVH5toml_parse_observation_info(obs_info_toml_filepath, &uvh5_header);
-        UVH5Hadmin(&uvh5_header);
-        arrayReferencePosition.LAT = calc_rad_from_degree(uvh5_header.latitude);
-        arrayReferencePosition.LON = calc_rad_from_degree(uvh5_header.longitude);
-        arrayReferencePosition.ALT = uvh5_header.altitude;
-
-        obs_antenna_names = malloc(uvh5_header.Nants_data*sizeof(char*));
-
-        // At this point we have XYZ uvh5_header.antenna_positions, and ENU uvh5_header._antenna_enu_positions
-        for(i = 0; i < uvh5_header.Nants_data; i++){
-          int ant_idx = uvh5_header._antenna_num_idx_map[
-            uvh5_header._antenna_numbers_data[i]
-          ];
-          obs_antenna_positions[i*3 + 0] = uvh5_header.antenna_positions[ant_idx*3 + 0];
-          obs_antenna_positions[i*3 + 1] = uvh5_header.antenna_positions[ant_idx*3 + 1];
-          obs_antenna_positions[i*3 + 2] = uvh5_header.antenna_positions[ant_idx*3 + 2];
-
-          obs_antenna_names[i] = uvh5_header.antenna_names[ant_idx];
-        }
-        // BLADE needs ECEF coordinates
-        // It doesn't make sense to convert from ECEF back to XYZ in the uvh5 library
-        // but then back to ECEF here. TODO don't do the above
-        calc_position_to_ecef_frame_from_xyz(
-          obs_antenna_positions,
-          uvh5_header.Nants_data,
-          arrayReferencePosition.LON,
-          arrayReferencePosition.LAT,
-          arrayReferencePosition.ALT
-        );
-        // observationMetaData.referenceAntennaIndex = uvh5_header._antenna_num_idx_map[
-        //   uvh5_header._antenna_numbers_data[0]
-        // ];
-        observationMetaData.referenceAntennaIndex = 0;
-
-        free(antenna_calibration_coeffs);
-        collect_beamCoordinates(BLADE_ATA_OUTPUT_NBEAM,
-            obs_beam_coordinates, obs_phase_center, databuf_header);
-        hashpipe_info(thread_name, "Parsing '%s' for antenna-weights information.", obs_antenna_calibration_filepath);
-        if(
-          read_antenna_weights(
-            obs_antenna_calibration_filepath,
-            uvh5_header.Nants_data, // number of antenna of interest
-            obs_antenna_names, // the antenna of interest
-            observationMetaData.frequencyStartIndex, // the first channel
-            input_buffer_dim_NCHAN, // the number of channels
-            &antenna_calibration_coeffs // return value
-          )
-        ){
-          // Failed to open CALWGHTP file, set 1.0+0.0j
-          hashpipe_warn(thread_name, "CALWGHTP `%s` could not be opened. Using 1.0+0.0j.", obs_antenna_calibration_filepath);
-          errno = 0;
-          size_of_calib = 
-            input_buffer_dim_NANTS*
-            input_buffer_dim_NCHAN*
-            input_buffer_dim_NPOLS;
-          antenna_calibration_coeffs = malloc(size_of_calib*sizeof(double _Complex*));
-
-          for(i = 0; i < size_of_calib; i++){
-            antenna_calibration_coeffs[i] = 1.0 + 0.0*I;
-          }
-        }
-
-        // Free previously queued buffers
-        for(i = 0; i < indb->header.n_block; i++)
-        {
-          if(input_output_blockid_pairs[i] != -1) {
-            hpguppi_databuf_set_free(indb, i);
-            // set filled old output, to synchronise the disk thread
-            hpguppi_databuf_set_filled(outdb, input_output_blockid_pairs[i]);
-            input_output_blockid_pairs[i] = -1;
-          }
-        }
-
-        blade_ata_terminate();
-        blade_ata_initialize(
-          BLADE_ATA_CONFIG,
-          batch_size,
-          &observationMetaData,
-          &arrayReferencePosition,
-          obs_phase_center,
-          obs_beam_coordinates,
-          obs_antenna_positions,
-          antenna_calibration_coeffs
-        );
-    }
-    pktidx_obs_start_prev = pktidx_obs_start;
-    hgetr8(databuf_header, "DUT1", &dut1);
-    timejd_midblock = jd_mid_block(databuf_header);
-
-
-    // waiting for output buffer to be free
-    while ((hpguppi_databuf_wait_rv=hpguppi_databuf_wait_free(outdb, curblock_out)) !=
-        HASHPIPE_OK)
-    {
-      if (hpguppi_databuf_wait_rv == HASHPIPE_TIMEOUT && status_state != 2)
-      {
-        hashpipe_status_lock_safe(&st);
-        hputs(st.buf, status_key, "outblocked");
-        hashpipe_status_unlock_safe(&st);
-        status_state = 2;
-        continue;
-      }
-      else
-      {
-        hashpipe_error(thread_name, "error waiting for output buffer #%d, rv: %i", curblock_out, hpguppi_databuf_wait_rv);
-        pthread_exit(NULL);
-        break;
-      }
-    }
-    // collect free output_buffer 
-    if(hpguppi_databuf_wait_rv != HASHPIPE_OK){
-      // presume an error occurred while status_state for a free output buffer
-      break;
-    }
-
-    if(status_state != 3){
-      hashpipe_status_lock_safe(&st);
-      hputs(st.buf, status_key, "beamforming");
-      hashpipe_status_unlock_safe(&st);
-      status_state = 3;
-    }
-
-    // Asynchronously queue
-    input_output_blockid_pairs[curblock_in] = curblock_out;
-    #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
-      accumulator_counter = blade_ata_h_accumulator_counter();
-    #endif
-    while(!
-      blade_ata_enqueue(
-        (void*) hpguppi_databuf_data(indb, curblock_in),
-        #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
-        (void*) ftp_outputblocks[curblock_out],
-        #elif BLADE_ATA_MODE == BLADE_ATA_MODE_B
-        (void*) hpguppi_databuf_data(outdb, curblock_out),
-        #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
-        #endif
-        curblock_in,
-        timejd_midblock,
-        dut1
-      )
-    ){
-      if(status_state != 4){
-        hashpipe_status_lock_safe(&st);
-        hputs(st.buf, status_key, "beamforming blocked");
-        hashpipe_status_unlock_safe(&st);
-        status_state = 4;
-      } 
-    }
-    clock_gettime(CLOCK_MONOTONIC, &ts_blocks_recvd[curblock_in]);
-
-    {// Asynchronous CPU work 
-      // copy across the header
-      databuf_header = hpguppi_databuf_header(outdb, curblock_out);
-
-      #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
-        if(accumulator_counter == 0) {
-          memcpy(databuf_header, 
-                hpguppi_databuf_header(indb, curblock_in), 
-                BLOCK_HDR_SIZE);
-        }
-        else {
-          hgetu8(hpguppi_databuf_header(indb, curblock_in), "BLKSTOP", &block_stop_pktidx);
-          hputu8(databuf_header, "BLKSTOP", block_stop_pktidx);
-        }
-      #else
-        memcpy(databuf_header, 
-              hpguppi_databuf_header(indb, curblock_in), 
-              BLOCK_HDR_SIZE);
-      #endif
-
-      //TODO upate output_buffer headers to reflect that they contain beams
-      hputi4(databuf_header, "INCOBEAM", (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
-      hputi4(databuf_header, "NBEAM", BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
-      hputi4(databuf_header, "NBITS", BLADE_ATA_OUTPUT_NBITS);
-      hputs(databuf_header, "DATATYPE", "FLOAT");
-      hputs(databuf_header, "SMPLTYPE", BLADE_ATA_OUTPUT_SAMPLE_TYPE);
-      hputi4(databuf_header, "BLOCSIZE", BLADE_BLOCK_DATA_SIZE);
-
-      hgetr8(databuf_header, "TBIN", &tbin);
-      hgetr8(databuf_header, "OBSBW", &obsbw);
-
-      #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
-      // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
-      hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*(BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0))); 
-      hputi4(databuf_header, "NPOL", BLADE_ATA_CONFIG.numberOfOutputPolarizations);
-
-      tbin *= BLADE_ATA_CONFIG.channelizerRate;
-      tbin *= BLADE_ATA_CONFIG.integrationSize;
-      
-      // negate OBSBW to indicate descending frequency-channel order
-      obsbw *= -1.0;
-
-      #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
-      if (accumulator_counter == 0) {
-        // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
-        hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME*(BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0))); 
-        hputi4(databuf_header, "NTIME", 1); // accumulation limits output to NTIME dimension-length of 1
-        hputi4(databuf_header, "NPOL", BLADE_ATA_CONFIG.numberOfOutputPolarizations);
-
-        tbin *= BLADE_ATA_CONFIG.channelizerRate;
-        tbin *= BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
-        
-        // negate OBSBW to indicate descending frequency-channel order
-        obsbw *= -1.0;
-      }
-
-      #else
-      hputi4(databuf_header, "NCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
-      hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
-      #endif
-
-      hputr8(databuf_header, "TBIN", tbin);
-      hputr8(databuf_header, "OBSBW", obsbw);
-    }
-
-    // hashpipe_info(thread_name, "batched block #%d as input #%d.", curblock_in, inputs_batched);
-    curblock_in  = (curblock_in + 1) % indb->header.n_block;
-
-    #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
-      while(blade_ata_h_dequeue_b(&dequeued_input_id)) {
-        hpguppi_databuf_set_free(indb, dequeued_input_id);
-        if(blade_ata_h_enqueue_h((void*) ftp_outputblocks[curblock_out], curblock_out)){
-          // hashpipe_info(thread_name, "batched block #%d as output #%d.", curblock_out, outputs_batched);
-          curblock_out = (curblock_out + 1) % outdb->header.n_block;
-        }
-      }
-    #elif BLADE_ATA_MODE != BLADE_ATA_MODE_H
-      // hashpipe_info(thread_name, "batched block #%d as output #%d.", curblock_out, outputs_batched);
-      curblock_out = (curblock_out + 1) % outdb->header.n_block;
-    #endif
-
-    // Dequeue all completed buffers
-    while (blade_ata_dequeue(&dequeued_input_id))
-    {
-      #if BLADE_ATA_MODE != BLADE_ATA_MODE_H
-        hpguppi_databuf_set_free(indb, dequeued_input_id);
-      #endif
-      #if BLADE_ATA_MODE == BLADE_ATA_MODE_A || BLADE_ATA_MODE == BLADE_ATA_MODE_H
-      // Mode A/H has filterbank outputs, so transpose the binary data to suit that of .fil files
-      const int npol = BLADE_ATA_CONFIG.numberOfOutputPolarizations;
-      const int nbeams = BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0);
-
-      #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
-      float* ftp_output = ftp_outputblocks[input_output_blockid_pairs[dequeued_input_id]];
-      float* tpf_output = (float*) hpguppi_databuf_data(outdb, input_output_blockid_pairs[dequeued_input_id]);
-      const int nfreq = BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate;
-      const int ntime = BLADE_ATA_CONFIG.inputDims.NTIME / (BLADE_ATA_CONFIG.integrationSize * BLADE_ATA_CONFIG.channelizerRate);
-      #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
-      float* ftp_output = ftp_outputblocks[dequeued_input_id];
-      float* tpf_output = (float*) hpguppi_databuf_data(outdb, dequeued_input_id);
-      const int nfreq = BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
-      const int ntime = 1;
-      #endif
-      int b,f,t,p;
-
-      for(b = 0; b < nbeams; b++) {
-        for(f = 0; f < nfreq; f++) {
-          for(t = 0; t < ntime; t++) {
-            for(p = 0; p < npol; p++) {
-              tpf_output[
-                  ((  b *ntime
-                    + t)*npol
-                    + p)*nfreq
-                    - f + nfreq-1 // filterbank files typically are frequency descending
-              ] = ftp_output[
-                  ((  b *nfreq
-                    + f)*ntime
-                    + t)*npol
-                    + p
-              ];
-            }
-          }
-        }
-      }
-      #endif
-
-      #if BLADE_ATA_MODE != BLADE_ATA_MODE_H
-      hpguppi_databuf_set_filled(outdb, input_output_blockid_pairs[dequeued_input_id]);
-      input_output_blockid_pairs[dequeued_input_id] = -1;
-      #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
-      hpguppi_databuf_set_filled(outdb, dequeued_input_id);
-      #endif
-
-      // Update moving sum (for moving average)
-      clock_gettime(CLOCK_MONOTONIC, &ts_free_input);
-      fill_to_free_elapsed_ns = ELAPSED_NS(ts_blocks_recvd[dequeued_input_id], ts_free_input)/batch_size;
-      fill_to_free_moving_sum_ns +=
-          fill_to_free_elapsed_ns - fill_to_free_block_ns[dequeued_input_id];
-      // Store new value
-      fill_to_free_block_ns[dequeued_input_id] = fill_to_free_elapsed_ns;
+    else {
+      user_data->prev_flagged_NANTS = input_buffer_dim_NANTS;
+      user_data->prev_flagged_NCHAN = input_buffer_dim_NCHAN;
+      user_data->prev_flagged_NTIME = input_buffer_dim_NTIME;
+      user_data->prev_flagged_NPOLS = input_buffer_dim_NPOLS;
     }
   }
 
-  hashpipe_info(thread_name, "returning");
+  {// re-setup if a new observation
+    int64_t pktidx_obs_start, pktidx_blk_start;
+    hgeti8(databuf_header, "PKTSTART", &pktidx_obs_start);
+    hgeti8(databuf_header, "BLKSTART", &pktidx_blk_start);
+
+    // if first block of observation
+    if (pktidx_obs_start != user_data->prev_pktidx_obs_start && pktidx_obs_start >= pktidx_blk_start) {
+      UVH5_header_t uvh5_header = {0};
+      char tel_info_toml_filepath[70] = {'\0'};
+      char obs_info_toml_filepath[70] = {'\0'};
+      double obs_antenna_positions[BLADE_ATA_INPUT_NANT*3] = {0}, obs_beam_coordinates[BLADE_ATA_OUTPUT_NBEAM*2] = {0};
+      double obs_phase_center[2] = {0};
+      struct blade_ata_observation_meta observationMetaData = {0};
+      struct LonLatAlt arrayReferencePosition = {0};
+
+      double _Complex* antenna_calibration_coeffs;
+      char obs_antenna_calibration_filepath[70] = {'\0'};
+      char** obs_antenna_names = NULL;
+
+      int fenchan;
+      hgetu8(databuf_header, "SCHAN", &observationMetaData.frequencyStartIndex);
+      hgetr8(databuf_header, "CHAN_BW", &observationMetaData.channelBandwidthHz);
+      hgeti4(databuf_header, "FENCHAN", &fenchan);
+      hgetr8(databuf_header, "OBSFREQ", &observationMetaData.rfFrequencyHz);
+
+      double tmp = (double)observationMetaData.rfFrequencyHz +
+        (-(double)observationMetaData.frequencyStartIndex - ((double)BLADE_ATA_CONFIG.inputDims.NCHANS / 2.0)
+          + ((double)fenchan / 2.0) + 0.5
+        ) * (double)observationMetaData.channelBandwidthHz;
+
+
+      observationMetaData.rfFrequencyHz = tmp;
+
+      observationMetaData.rfFrequencyHz *= 1e6;
+      observationMetaData.channelBandwidthHz *= 1e6;
+      observationMetaData.totalBandwidthHz = fenchan * observationMetaData.channelBandwidthHz;
+
+      hashpipe_status_lock_safe(user_data->status);
+      {
+        hgets(user_data->status->buf, "TELINFOP", 70, tel_info_toml_filepath);
+        hgets(user_data->status->buf, "OBSINFOP", 70, obs_info_toml_filepath);
+        hgets(user_data->status->buf, "CALWGHTP", 70, obs_antenna_calibration_filepath);
+      }
+      hashpipe_status_unlock_safe(user_data->status);
+
+      hashpipe_info(user_data->thread_name, "Parsing '%s' as Telescope information.", tel_info_toml_filepath);
+      UVH5toml_parse_telescope_info(tel_info_toml_filepath, &uvh5_header);
+      hashpipe_info(user_data->thread_name, "Parsing '%s' as Observation information.", obs_info_toml_filepath);
+      UVH5toml_parse_observation_info(obs_info_toml_filepath, &uvh5_header);
+      UVH5Hadmin(&uvh5_header);
+      arrayReferencePosition.LAT = calc_rad_from_degree(uvh5_header.latitude);
+      arrayReferencePosition.LON = calc_rad_from_degree(uvh5_header.longitude);
+      arrayReferencePosition.ALT = uvh5_header.altitude;
+
+      obs_antenna_names = malloc(uvh5_header.Nants_data*sizeof(char*));
+
+      // At this point we have XYZ uvh5_header.antenna_positions, and ENU uvh5_header._antenna_enu_positions
+      for(int i = 0; i < uvh5_header.Nants_data; i++) {
+        int ant_idx = uvh5_header._antenna_num_idx_map[
+          uvh5_header._antenna_numbers_data[i]
+        ];
+        obs_antenna_positions[i*3 + 0] = uvh5_header.antenna_positions[ant_idx*3 + 0];
+        obs_antenna_positions[i*3 + 1] = uvh5_header.antenna_positions[ant_idx*3 + 1];
+        obs_antenna_positions[i*3 + 2] = uvh5_header.antenna_positions[ant_idx*3 + 2];
+
+        obs_antenna_names[i] = uvh5_header.antenna_names[ant_idx];
+      }
+      // BLADE needs ECEF coordinates
+      // It doesn't make sense to convert from ECEF back to XYZ in the uvh5 library
+      // but then back to ECEF here. TODO don't do the above
+      calc_position_to_ecef_frame_from_xyz(
+        obs_antenna_positions,
+        uvh5_header.Nants_data,
+        arrayReferencePosition.LON,
+        arrayReferencePosition.LAT,
+        arrayReferencePosition.ALT
+      );
+      // observationMetaData.referenceAntennaIndex = uvh5_header._antenna_num_idx_map[
+      //   uvh5_header._antenna_numbers_data[0]
+      // ];
+      observationMetaData.referenceAntennaIndex = 0;
+
+      collect_beamCoordinates(BLADE_ATA_OUTPUT_NBEAM,
+          obs_beam_coordinates, obs_phase_center, databuf_header);
+      hashpipe_info(user_data->thread_name, "Parsing '%s' for antenna-weights information.", obs_antenna_calibration_filepath);
+      if (
+        read_antenna_weights(
+          obs_antenna_calibration_filepath,
+          uvh5_header.Nants_data, // number of antenna of interest
+          obs_antenna_names, // the antenna of interest
+          observationMetaData.frequencyStartIndex, // the first channel
+          BLADE_ATA_CONFIG.inputDims.NCHANS, // the number of channels
+          &antenna_calibration_coeffs // return value
+        )
+      ) {
+        // Failed to open CALWGHTP file, set 1.0+0.0j
+        hashpipe_warn(user_data->thread_name, "CALWGHTP `%s` could not be opened. Using 1.0+0.0j.", obs_antenna_calibration_filepath);
+        errno = 0;
+        size_t size_of_calib =
+          BLADE_ATA_CONFIG.inputDims.NANTS*
+          BLADE_ATA_CONFIG.inputDims.NCHANS*
+          BLADE_ATA_CONFIG.inputDims.NPOLS;
+        antenna_calibration_coeffs = malloc(size_of_calib*sizeof(double _Complex*));
+
+        for(int i = 0; i < size_of_calib; i++) {
+          antenna_calibration_coeffs[i] = 1.0 + 0.0*I;
+        }
+      }
+
+      blade_ata_terminate();
+      blade_ata_initialize(
+        BLADE_ATA_CONFIG,
+        user_data->blade_number_of_workers,
+        &observationMetaData,
+        &arrayReferencePosition,
+        obs_phase_center,
+        obs_beam_coordinates,
+        obs_antenna_positions,
+        antenna_calibration_coeffs
+      );
+
+      free(obs_antenna_names);
+      free(antenna_calibration_coeffs);
+    }
+
+    user_data->prev_pktidx_obs_start = pktidx_obs_start;
+
+    if (BLADE_BLOCK_DATA_SIZE != blade_ata_get_output_size()*BLADE_ATA_OUTPUT_ELEMENT_BYTES) {
+      hashpipe_error(user_data->thread_name, "BLADE_BLOCK_DATA_SIZE %lu != %lu BLADE configured output size.", BLADE_BLOCK_DATA_SIZE, blade_ata_get_output_size()*BLADE_ATA_OUTPUT_ELEMENT_BYTES);
+      pthread_exit(NULL);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool blade_cb_input_buffer_fetch(void* user_data_void, void** buffer, size_t* buffer_id) {
+  blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
+
+  // prefetch callback has ascertained that the current buffer is filled... don't check again
+
+  #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
+  user_data->accumulator_counter = blade_ata_h_accumulator_counter();
+  #endif
+
+  *buffer = hpguppi_databuf_data(user_data->in, user_data->in_index);
+  clock_gettime(CLOCK_MONOTONIC, &user_data->ts_blocks_recvd[user_data->in_index]);
+
+  blade_ata_set_block_time_mjd(jd_mid_block(hpguppi_databuf_header(user_data->in, user_data->in_index)));
+  double dut1;
+  hgetr8(hpguppi_databuf_header(user_data->in, user_data->in_index), "DUT1", &dut1);
+  blade_ata_set_block_dut1(dut1);
+
+  // hashpipe_info(user_data->thread_name, "batched input block #%d.", user_data->in_index);
+  *buffer_id = user_data->in_index;
+  user_data->in_index  = (user_data->in_index + 1) % user_data->in->header.n_block;
+
+  return true;
+}
+
+void blade_cb_input_buffer_enqueued(void* user_data_void, size_t buffer_id) {
+  blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
+
+  double tbin;
+  double obsbw;
+
+  {// Asynchronous CPU work
+    // copy across the header
+    char* databuf_header = hpguppi_databuf_header(user_data->out, user_data->out_index_free);
+
+    #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
+      size_t block_stop_pktidx;
+      if (user_data->accumulator_counter == 0) {
+        memcpy(databuf_header,
+              hpguppi_databuf_header(user_data->in, buffer_id),
+              BLOCK_HDR_SIZE);
+      }
+      else {
+        hgetu8(hpguppi_databuf_header(user_data->in, buffer_id), "BLKSTOP", &block_stop_pktidx);
+        hputu8(databuf_header, "BLKSTOP", block_stop_pktidx);
+      }
+    #else
+      memcpy(databuf_header,
+            hpguppi_databuf_header(user_data->in, buffer_id),
+            BLOCK_HDR_SIZE);
+    #endif
+
+    //TODO upate output_buffer headers to reflect that they contain beams
+    hputi4(databuf_header, "INCOBEAM", (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
+    hputi4(databuf_header, "NBEAM", BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
+    hputi4(databuf_header, "NBITS", BLADE_ATA_OUTPUT_NBITS);
+    hputs(databuf_header, "DATATYPE", "FLOAT");
+    hputs(databuf_header, "SMPLTYPE", BLADE_ATA_OUTPUT_SAMPLE_TYPE);
+    hputi4(databuf_header, "BLOCSIZE", BLADE_BLOCK_DATA_SIZE);
+
+    hgetr8(databuf_header, "TBIN", &tbin);
+    hgetr8(databuf_header, "OBSBW", &obsbw);
+
+    #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
+    // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
+    hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*(BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0)));
+    hputi4(databuf_header, "NPOL", BLADE_ATA_CONFIG.numberOfOutputPolarizations);
+
+    tbin *= BLADE_ATA_CONFIG.channelizerRate;
+    tbin *= BLADE_ATA_CONFIG.integrationSize;
+
+    // negate OBSBW to indicate descending frequency-channel order
+    obsbw *= -1.0;
+
+    #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
+    if (user_data->accumulator_counter == 0) {
+      // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
+      hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME*(BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0)));
+      hputi4(databuf_header, "NTIME", 1); // accumulation limits output to NTIME dimension-length of 1
+      hputi4(databuf_header, "NPOL", BLADE_ATA_CONFIG.numberOfOutputPolarizations);
+
+      tbin *= BLADE_ATA_CONFIG.channelizerRate;
+      tbin *= BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
+
+      // negate OBSBW to indicate descending frequency-channel order
+      obsbw *= -1.0;
+    }
+
+    #else
+    hputi4(databuf_header, "NCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
+    hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
+    #endif
+
+    hputr8(databuf_header, "TBIN", tbin);
+    hputr8(databuf_header, "OBSBW", obsbw);
+  }
+
+}
+
+void blade_cb_input_buffer_ready(void* user_data_void, const void* buffer, size_t buffer_id) {
+  blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
+
+  hpguppi_databuf_set_free(user_data->in, buffer_id);
+  // hashpipe_info(user_data->thread_name, "freed inputput block #%d.", buffer_id);
+}
+
+bool blade_cb_output_buffer_fetch(void* user_data_void, void** buffer, size_t* buffer_id) {
+  blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
+
+  {// poll if output buffer is free
+    int hpguppi_databuf_wait_rv = hpguppi_databuf_wait_free_timeout(
+      user_data->out, user_data->out_index_free,
+      &user_data->ts_buffer_wait_timeout
+    );
+    if (hpguppi_databuf_wait_rv == HASHPIPE_TIMEOUT) {
+      if (user_data->status_state != 2)
+      {
+        hashpipe_status_lock_safe(user_data->status);
+        {
+          hputs(user_data->status->buf, user_data->status_key, "outblocked");
+        }
+        hashpipe_status_unlock_safe(user_data->status);
+        user_data->status_state = 2;
+      }
+      return false;
+    }
+    if(hpguppi_databuf_wait_rv != HASHPIPE_OK) {
+      hashpipe_error(user_data->thread_name, "error waiting for output buffer #%d, rv: %i", user_data->out_index_free, hpguppi_databuf_wait_rv);
+      pthread_exit(NULL);
+      return false;
+    }
+  }
+
+  #if BLADE_ATA_MODE == BLADE_ATA_MODE_A || BLADE_ATA_MODE == BLADE_ATA_MODE_H
+  *buffer = user_data->out_intermediary[user_data->out_index_free];
+  #else
+  hpguppi_blade_output_databuf_t* out = (hpguppi_blade_output_databuf_t*) user_data->out;
+  *buffer = hpguppi_databuf_data(out, user_data->out_index_free);
+  #endif
+
+  // hashpipe_info(user_data->thread_name, "batched output block #%d.", user_data->out_index_free);
+  *buffer_id = user_data->out_index_free;
+  user_data->out_index_free  = (user_data->out_index_free + 1) % user_data->out->header.n_block;
+  return true;
+}
+
+void blade_cb_output_buffer_ready(void* user_data_void, const void* buffer, size_t buffer_id) {
+  blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
+
+  #if BLADE_ATA_MODE == BLADE_ATA_MODE_A || BLADE_ATA_MODE == BLADE_ATA_MODE_H
+  // Mode A/H has filterbank outputs, so transpose the binary data to suit that of .fil files
+  const int npol = BLADE_ATA_CONFIG.numberOfOutputPolarizations;
+  const int nbeams = BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0);
+
+  #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
+  float* ftp_output = user_data->out_intermediary[buffer_id];
+  float* tpf_output = (float*) hpguppi_databuf_data(user_data->out, buffer_id);
+  const int nfreq = BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate;
+  const int ntime = BLADE_ATA_CONFIG.inputDims.NTIME / (BLADE_ATA_CONFIG.integrationSize * BLADE_ATA_CONFIG.channelizerRate);
+  #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
+  float* ftp_output = user_data->out_intermediary[buffer_id];
+  float* tpf_output = (float*) hpguppi_databuf_data(user_data->out, buffer_id);
+  const int nfreq = BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
+  const int ntime = 1;
+  #endif
+  int b,f,t,p;
+
+  for(b = 0; b < nbeams; b++) {
+    for(f = 0; f < nfreq; f++) {
+      for(t = 0; t < ntime; t++) {
+        for(p = 0; p < npol; p++) {
+          tpf_output[
+              ((  b *ntime
+                + t)*npol
+                + p)*nfreq
+                - f + nfreq-1 // filterbank files typically are frequency descending
+          ] = ftp_output[
+              ((  b *nfreq
+                + f)*ntime
+                + t)*npol
+                + p
+          ];
+        }
+      }
+    }
+  }
+  #endif
+
+  // hashpipe_info(user_data->thread_name, "filled output block #%d.", buffer_id);
+  if(user_data->out_index_fill != buffer_id) {
+    hashpipe_error(user_data->thread_name, "Non sequential output buffer fill detected: %d != %d.", user_data->out_index_fill, buffer_id);
+    pthread_exit(NULL);
+    return;
+  }
+  hpguppi_databuf_set_filled(user_data->out, buffer_id);
+  user_data->out_index_fill = (user_data->out_index_fill + 1) % user_data->out->header.n_block;
+
+  // Update moving sum (for moving average)
+  struct timespec ts_free_input = {0};
+  clock_gettime(CLOCK_MONOTONIC, &ts_free_input);
+
+  uint64_t fill_to_free_elapsed_ns = ELAPSED_NS(user_data->ts_blocks_recvd[buffer_id], ts_free_input);
+  user_data->fill_to_free_moving_sum_ns +=
+      fill_to_free_elapsed_ns - user_data->fill_to_free_block_ns[buffer_id];
+  // Store new value
+  user_data->fill_to_free_block_ns[buffer_id] = fill_to_free_elapsed_ns;
+}
+
+void blade_cb_clear_queued_input(void* user_data_void, size_t input_id) {
+  blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
+  // hashpipe_info(user_data->thread_name, "cancelled input block #%d.", input_id);
+  hpguppi_databuf_set_free(user_data->in, input_id);
+}
+
+void blade_cb_clear_queued_output(void* user_data_void, size_t output_id) {
+  blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
+  if(user_data->out_index_free != user_data->out_index_fill) {
+    hashpipe_info(user_data->thread_name, "reset output block index from #%d to #%d.", user_data->out_index_free, user_data->out_index_fill);
+    user_data->out_index_free = user_data->out_index_fill;
+  }
+}
+
+static void *run(hashpipe_thread_args_t *args)
+{
+  blade_userdata_t blade_userdata = {
+    .blade_number_of_workers = 2,
+
+    .status = &args->st,
+
+    .thread_name = args->thread_desc->name,
+    .status_key = args->thread_desc->skey,
+
+    .status_state = 0,
+    .ts_last_status_update = {
+      .tv_sec = 0,
+      .tv_nsec = 0,
+    },
+    .ts_buffer_wait_timeout = {
+      .tv_sec = 0,
+      .tv_nsec = 500000000, // 500 ms
+    },
+
+
+    .prev_flagged_NANTS = 0,
+    .prev_flagged_NCHAN = 0,
+    .prev_flagged_NTIME = 0,
+    .prev_flagged_NPOLS = 0,
+
+    .accumulator_counter = 0,
+
+    .in_index = 0,
+    .out_index_free = 0,
+
+    .in = (hpguppi_input_databuf_t *)args->ibuf,
+    .out = (hpguppi_blade_output_databuf_t *)args->obuf,
+
+    // .out_intermediary = {NULL},
+
+    .fill_to_free_moving_sum_ns = 0,
+    // .fill_to_free_block_ns = {0},
+    // .ts_blocks_recvd = {0},
+  };
+
+  #if BLADE_ATA_MODE == BLADE_ATA_MODE_A || BLADE_ATA_MODE == BLADE_ATA_MODE_H
+  for(size_t i = 0; i < N_INPUT_BLOCKS; i++) {
+    blade_userdata.out_intermediary[i] = malloc(BLADE_BLOCK_OUTPUT_DATA_SIZE);
+    blade_userdata.fill_to_free_block_ns[i] = 0;
+    memset(blade_userdata.ts_blocks_recvd + i, 0, sizeof(struct timespec));
+  }
+  #endif
+
+  int cudaDeviceId = args->instance_id;
+
+  hashpipe_status_lock_safe(blade_userdata.status);
+  {
+    hgeti4(blade_userdata.status->buf, "CUDADEV", &cudaDeviceId);
+  }
+  hashpipe_status_unlock_safe(blade_userdata.status);
+
+  if (cudaDeviceId >= 0) {
+    if (blade_use_device(cudaDeviceId)) {
+      hashpipe_info(args->thread_desc->name, "Successfully set CUDA device to %d.", cudaDeviceId);
+    }
+    else {
+      hashpipe_info(args->thread_desc->name, "Failed to set CUDA device to %d.", cudaDeviceId);
+      cudaDeviceId = -1;
+    }
+  }
+  hashpipe_status_lock_safe(blade_userdata.status);
+  {
+    hputi4(blade_userdata.status->buf, "CUDADEV", cudaDeviceId);
+    hputi4(blade_userdata.status->buf, "BLDBLKSZ", BLADE_BLOCK_DATA_SIZE);
+  }
+  hashpipe_status_unlock_safe(blade_userdata.status);
+
+  for(int i = 0; i < N_INPUT_BLOCKS; i++)
+  {
+    blade_pin_memory(hpguppi_databuf_data(blade_userdata.in, i), BLOCK_DATA_SIZE);
+    blade_pin_memory(hpguppi_databuf_data(blade_userdata.out, i), BLADE_BLOCK_DATA_SIZE);
+  }
+
+  blade_ata_register_user_data((void*) &blade_userdata);
+  blade_ata_register_input_buffer_prefetch_cb(&blade_cb_input_buffer_prefetch);
+  blade_ata_register_input_buffer_fetch_cb(&blade_cb_input_buffer_fetch);
+  blade_ata_register_input_buffer_ready_cb(&blade_cb_input_buffer_ready);
+  blade_ata_register_input_buffer_enqueued_cb(&blade_cb_input_buffer_enqueued);
+  blade_ata_register_output_buffer_fetch_cb(&blade_cb_output_buffer_fetch);
+  blade_ata_register_output_buffer_ready_cb(&blade_cb_output_buffer_ready);
+  blade_ata_register_blade_queued_input_clear_cb(&blade_cb_clear_queued_input);
+  blade_ata_register_blade_queued_output_clear_cb(&blade_cb_clear_queued_output);
+
+  while (run_threads())
+  {
+    blade_ata_compute_step();
+
+    // Will exit if thread has been cancelled
+    pthread_testcancel();
+  }
+
+  hashpipe_info(blade_userdata.thread_name, "returning");
   blade_ata_terminate();
   return NULL;
 }

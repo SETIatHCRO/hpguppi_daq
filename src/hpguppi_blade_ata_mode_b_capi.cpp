@@ -3,6 +3,7 @@
 
 #include "blade/base.hh"
 #include "blade/runner.hh"
+#include "blade/plan.hh"
 #include "blade/pipelines/ata/mode_b.hh"
 
 extern "C" {
@@ -13,7 +14,38 @@ using namespace Blade;
 using namespace Blade::Pipelines::ATA;
 
 using BladePipeline = ModeB<BLADE_ATA_MODE_B_OUTPUT_ELEMENT_T>;
-static std::unique_ptr<Runner<BladePipeline>> runner;
+
+static Vector<Device::CPU, F64> blockJulianDate({1});
+static Vector<Device::CPU, F64> blockDut1({1});
+
+static struct {
+    U64 StepCount = 0;
+    void* UserData = nullptr;
+    std::unordered_map<U64, void*> InputPointerMap;
+    std::unordered_map<U64, void*> OutputPointerMap;
+    std::unordered_map<U64, size_t> InputIdMap;
+    std::unordered_map<U64, size_t> OutputIdMap;
+    
+    struct {
+        BladePipeline::Config B;
+    } RunnersConfig;
+
+    struct {
+        std::unique_ptr<Runner<BladePipeline>> B;
+    } RunnersInstances;
+
+    struct {
+        blade_stateful_cb* InputBufferPrefetch;
+        blade_input_buffer_fetch_cb* InputBufferFetch;
+        blade_input_buffer_enqueued_cb* InputBufferEnqueued;
+        blade_input_buffer_ready_cb* InputBufferReady;
+        blade_output_buffer_fetch_cb* OutputBufferFetch;
+        blade_output_buffer_ready_cb* OutputBufferReady;
+
+        blade_clear_queued_cb* InputClear;
+        blade_clear_queued_cb* OutputClear;
+    } Callbacks;
+} State;
 
 bool blade_ata_b_initialize(
     struct blade_ata_mode_b_config ata_b_config,
@@ -25,7 +57,7 @@ bool blade_ata_b_initialize(
     double* antennaPositions_xyz,
     double _Complex* antennaCalibrations
 ) {
-    if (runner) {
+    if (State.RunnersInstances.B) {
         BL_FATAL("Can't initialize because Blade Runner is already initialized.");
         throw Result::ASSERTION_ERROR;
     }
@@ -49,7 +81,14 @@ bool blade_ata_b_initialize(
     memcpy(antennaCalibrationsCpp.data(), antennaCalibrations,
             antennaCalibrationsCpp.size()*sizeof(antennaCalibrationsCpp[0]));
 
-    BladePipeline::Config config = {        
+    State.RunnersConfig.B = {      
+        .inputDimensions = {
+            .A = ata_b_config.inputDims.NANTS,
+            .F = ata_b_config.inputDims.NCHANS,
+            .T = ata_b_config.inputDims.NTIME,
+            .P = ata_b_config.inputDims.NPOLS,
+        },
+  
         .preBeamformerChannelizerRate = ata_b_config.channelizerRate,
 
         .phasorObservationFrequencyHz = observationMeta->rfFrequencyHz,
@@ -67,22 +106,14 @@ bool blade_ata_b_initialize(
             .DEC = obs_phase_center_radecrad[1]
         },
         .phasorAntennaPositions = antennaPositions,
-        .phasorAntennaCalibrations = {0},
+        .phasorAntennaCalibrations = {},
         .phasorBeamCoordinates = beamCoordinates,
-        
-        .beamformerNumberOfAntennas  = ata_b_config.inputDims.NANTS,
-        .beamformerNumberOfFrequencyChannels = ata_b_config.inputDims.NCHANS,
-        .beamformerNumberOfTimeSamples  = ata_b_config.inputDims.NTIME,
-        .beamformerNumberOfPolarizations  = ata_b_config.inputDims.NPOLS,
-        .beamformerNumberOfBeams = ata_b_config.beamformerBeams,
+
         .beamformerIncoherentBeam = false,
 
         .detectorEnable = false,
         .detectorIntegrationSize = 1,
         .detectorNumberOfOutputPolarizations = 1,
-
-        .outputMemWidth = ata_b_config.outputMemWidth,
-        .outputMemPad = ata_b_config.outputMemPad,
 
         .castBlockSize = ata_b_config.castBlockSize,
         .channelizerBlockSize = ata_b_config.channelizerBlockSize,
@@ -90,79 +121,205 @@ bool blade_ata_b_initialize(
         .detectorBlockSize = ata_b_config.beamformerBlockSize
     };
 
-    config.phasorAntennaCalibrations.resize(
-       config.beamformerNumberOfAntennas *
-       config.beamformerNumberOfFrequencyChannels *
-       config.preBeamformerChannelizerRate *
-       config.beamformerNumberOfPolarizations
+    ArrayTensorDimensions* beamformerInputDimensions = &State.RunnersConfig.B.inputDimensions;
+
+    State.RunnersConfig.B.phasorAntennaCalibrations.resize(
+        beamformerInputDimensions->numberOfAspects() *
+        beamformerInputDimensions->numberOfFrequencyChannels() *
+        State.RunnersConfig.B.preBeamformerChannelizerRate *
+        beamformerInputDimensions->numberOfPolarizations()
     );
 
     const size_t calAntStride = 1;
-    const size_t calPolStride = config.beamformerNumberOfAntennas * calAntStride;
-    const size_t calChnStride = config.beamformerNumberOfPolarizations * calPolStride;
+    const size_t calPolStride = beamformerInputDimensions->numberOfAspects() * calAntStride;
+    const size_t calChnStride = beamformerInputDimensions->numberOfPolarizations() * calPolStride;
 
     const size_t weightsPolStride = 1;
-    const size_t weightsChnStride = config.beamformerNumberOfPolarizations * weightsPolStride;
-    const size_t weightsAntStride = config.beamformerNumberOfFrequencyChannels * config.preBeamformerChannelizerRate * weightsChnStride;
-    BL_INFO("Expanding the {} coarse-channel coefficients by a factor of {}.", config.beamformerNumberOfFrequencyChannels, config.preBeamformerChannelizerRate);
+    const size_t weightsChnStride = beamformerInputDimensions->numberOfPolarizations() * weightsPolStride;
+    const size_t weightsAntStride = beamformerInputDimensions->numberOfFrequencyChannels() * State.RunnersConfig.B.preBeamformerChannelizerRate * weightsChnStride;
+    BL_INFO("Expanding the {} coarse-channel coefficients by a factor of {}.", beamformerInputDimensions->numberOfFrequencyChannels(), State.RunnersConfig.B.preBeamformerChannelizerRate);
 
-    for (U64 antIdx = 0; antIdx < config.beamformerNumberOfAntennas; antIdx++) {
-        for (U64 chnIdx = 0; chnIdx < config.beamformerNumberOfFrequencyChannels; chnIdx++) {
-            for (U64 polIdx = 0; polIdx < config.beamformerNumberOfPolarizations; polIdx++) {
-                for (U64 fchIdx = 0; fchIdx < config.preBeamformerChannelizerRate; fchIdx++) {
-                    const auto inputIdx = chnIdx * calChnStride +
-                                          polIdx * calPolStride + 
-                                          antIdx * calAntStride;
+    U64 inputIdx, frqIdx, outputIdx, antIdx, chnIdx, polIdx, fchIdx;
+    for (antIdx = 0; antIdx < beamformerInputDimensions->numberOfAspects(); antIdx++) {
+        for (chnIdx = 0; chnIdx < beamformerInputDimensions->numberOfFrequencyChannels(); chnIdx++) {
+            for (polIdx = 0; polIdx < beamformerInputDimensions->numberOfPolarizations(); polIdx++) {
+                inputIdx = chnIdx * calChnStride +
+                    polIdx * calPolStride + 
+                    antIdx * calAntStride;
+                for (fchIdx = 0; fchIdx < State.RunnersConfig.B.preBeamformerChannelizerRate; fchIdx++) {
+                    frqIdx = chnIdx * State.RunnersConfig.B.preBeamformerChannelizerRate + fchIdx;
+                    outputIdx = antIdx * weightsAntStride +
+                        polIdx * weightsPolStride +
+                        frqIdx * weightsChnStride;
 
-                    const auto frqIdx = chnIdx * config.preBeamformerChannelizerRate + fchIdx;
-                    const auto outputIdx = antIdx * weightsAntStride +
-                                           polIdx * weightsPolStride +
-                                           frqIdx * weightsChnStride;
-
-                    config.phasorAntennaCalibrations[outputIdx] = antennaCalibrationsCpp[inputIdx];
+                    State.RunnersConfig.B.phasorAntennaCalibrations[outputIdx] = antennaCalibrationsCpp[inputIdx];
                 }
             }
         }
     }
     
-    runner = Runner<BladePipeline>::New(numberOfWorkers, config);
+    State.RunnersInstances.B = Runner<BladePipeline>::New(
+        numberOfWorkers,
+        State.RunnersConfig.B
+    );
+
+    State.InputPointerMap.reserve(numberOfWorkers);
+    State.OutputPointerMap.reserve(numberOfWorkers);
+    State.InputIdMap.reserve(numberOfWorkers);
+    State.OutputIdMap.reserve(numberOfWorkers);
 
     return true;
 }
 
 void blade_ata_b_terminate() {
-    if (!runner) {
-        BL_FATAL("Can't terminate because Blade Runner isn't initialized.");
-        throw Result::ASSERTION_ERROR;
+    if (!State.RunnersInstances.B) {
+        BL_WARN("Can't terminate because Blade Runner isn't initialized.");
+        // throw Result::ASSERTION_ERROR;
     }
-    runner.reset();
+
+    for(const auto &[key, value]: State.InputIdMap) {
+        State.Callbacks.InputClear(State.UserData, value);
+    }
+    State.InputIdMap.clear();
+    for(const auto &[key, value]: State.OutputIdMap) {
+        State.Callbacks.OutputClear(State.UserData, value);
+    }
+    State.OutputIdMap.clear();
+
+    State.RunnersInstances.B.reset();
 }
 
 size_t blade_ata_b_get_input_size() {
-    assert(runner);
-    return runner->getWorker().getInputSize();
+    assert(State.RunnersInstances.B);
+    return State.RunnersInstances.B->getWorker().getInputBuffer().dims().size();
 }
 
 size_t blade_ata_b_get_output_size() {
-    assert(runner);
-    return runner->getWorker().getOutputSize();
+    assert(State.RunnersInstances.B);
+    return State.RunnersInstances.B->getWorker().getOutputBuffer().dims().size();
 }
 
-bool blade_ata_b_enqueue(void* input_ptr, void* output_ptr, size_t id, double time_mjd, double dut1) {
-    assert(runner);
-    return runner->enqueue([&](auto& worker){
-        auto input = Vector<Device::CPU, CI8>(input_ptr, worker.getInputSize());
-        auto output = Vector<Device::CPU, BLADE_ATA_MODE_B_OUTPUT_ELEMENT_T>(output_ptr, worker.getOutputSize());
-        auto time_mjd_vec = Vector<Device::CPU, F64>(&time_mjd, 1);
-        auto du1_vec = Vector<Device::CPU, F64>(&dut1, 1);
-
-        worker.run(time_mjd_vec, du1_vec, input, output);
-
-        return id;
-    });
+void blade_ata_b_set_block_time_mjd(double mjd) {
+    blockJulianDate.data()[0] = mjd;
 }
 
-bool blade_ata_b_dequeue(size_t* id) {
-    assert(runner);
-    return runner->dequeue(id);
+void blade_ata_b_set_block_dut1(double dut1) {
+    blockDut1.data()[0] = dut1;
+}
+
+void blade_ata_b_register_user_data(void* user_data) {
+    State.UserData = user_data;
+}
+
+void blade_ata_b_register_input_buffer_prefetch_cb(blade_stateful_cb* f) {
+    State.Callbacks.InputBufferPrefetch = f;
+}
+
+void blade_ata_b_register_input_buffer_fetch_cb(blade_input_buffer_fetch_cb* f) {
+    State.Callbacks.InputBufferFetch = f;
+}
+
+void blade_ata_b_register_input_buffer_enqueued_cb(blade_input_buffer_enqueued_cb* f) {
+    State.Callbacks.InputBufferEnqueued = f;
+}
+
+void blade_ata_b_register_input_buffer_ready_cb(blade_input_buffer_ready_cb* f) {
+    State.Callbacks.InputBufferReady = f;
+}
+
+void blade_ata_b_register_output_buffer_fetch_cb(blade_output_buffer_fetch_cb* f) {
+    State.Callbacks.OutputBufferFetch = f;
+}
+
+void blade_ata_b_register_output_buffer_ready_cb(blade_output_buffer_ready_cb* f) {
+    State.Callbacks.OutputBufferReady = f;
+}
+
+void blade_ata_b_register_blade_queued_input_clear_cb(blade_clear_queued_cb* f) {
+    State.Callbacks.InputClear = f;
+}
+
+void blade_ata_b_register_blade_queued_output_clear_cb(blade_clear_queued_cb* f) {
+    State.Callbacks.OutputClear = f;
+}
+
+bool blade_ata_b_compute_step() {
+    bool prefetch = State.Callbacks.InputBufferPrefetch(State.UserData);
+    
+    if(!State.RunnersInstances.B) {
+        return false;
+    }
+
+    U64 callbackStep = 0;
+    void* externalBuffer_input = nullptr;
+    void* externalBuffer_output = nullptr;
+
+    auto& ModeB = State.RunnersInstances.B; 
+    if (prefetch) {
+        ModeB->enqueue([&](auto& worker) {
+            // Check if next runner has free slot.
+            Plan::Available(ModeB);
+
+            size_t bufferId_input;
+            size_t bufferId_output;
+            // Calls client callback to request empty input buffer.
+            if (!State.Callbacks.InputBufferFetch(State.UserData, &externalBuffer_input, &bufferId_input)) {
+                Plan::Skip();
+            }
+
+            if (!State.Callbacks.OutputBufferFetch(State.UserData, &externalBuffer_output, &bufferId_output)) {
+                State.Callbacks.InputClear(State.UserData, bufferId_input);
+                Plan::Skip();
+            }
+
+            // Keeps track of pointer for "ready" callback.
+            State.InputPointerMap.insert({State.StepCount, externalBuffer_input});
+            State.InputIdMap.insert({State.StepCount, bufferId_input});
+            State.OutputPointerMap.insert({State.StepCount, externalBuffer_output});
+            State.OutputIdMap.insert({State.StepCount, bufferId_output});
+
+            // Create Memory::ArrayTensor from RAW pointer.
+            auto input = ArrayTensor<Device::CPU, CI8>(externalBuffer_input, worker.getInputBuffer().dims());
+            auto output = ArrayTensor<Device::CPU, BLADE_ATA_MODE_B_OUTPUT_ELEMENT_T>(externalBuffer_output, worker.getOutputBuffer().dims());
+
+            // Transfer input memory to the pipeline.
+            Plan::TransferIn(worker, 
+                            blockJulianDate,
+                            blockDut1,
+                            input);
+
+            // Asynchronous CPU work
+            State.Callbacks.InputBufferEnqueued(State.UserData, bufferId_input); // not optimal, move to spin-loop
+
+            // Compute input data.
+            Plan::Compute(worker);
+
+            // Copy worker output to external output buffer.
+            Plan::TransferOut(output, worker.getOutputBuffer(), worker);
+
+            // Return job identity and increment counter.
+            return State.StepCount++; 
+        });
+    }
+
+    // Dequeue last runner job and recycle output buffer.
+    if (ModeB->dequeue(&callbackStep)) {
+        const auto& recycleBuffer_input = State.OutputPointerMap[callbackStep];
+        const auto& recycleBufferId_input = State.OutputIdMap[callbackStep];
+        const auto& recycleBuffer_output = State.OutputPointerMap[callbackStep];
+        const auto& recycleBufferId_output = State.OutputIdMap[callbackStep];
+        
+        State.Callbacks.InputBufferReady(State.UserData, recycleBuffer_input, recycleBufferId_input);
+        State.Callbacks.OutputBufferReady(State.UserData, recycleBuffer_output, recycleBufferId_output);
+        State.InputPointerMap.erase(callbackStep);
+        State.InputIdMap.erase(callbackStep);
+        State.OutputPointerMap.erase(callbackStep);
+        State.OutputIdMap.erase(callbackStep);
+    }
+
+    // Prevent memory clobber inside spin-loop.
+    Plan::Loop();
+
+    // Return if pipeline is computing something.
+    return !(ModeB->empty());
 }
