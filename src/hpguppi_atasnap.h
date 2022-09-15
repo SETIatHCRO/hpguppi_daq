@@ -775,7 +775,7 @@ int ata_snap_obs_info_write(hashpipe_status_t *st, struct ata_snap_obs_info *obs
 char ata_snap_obs_info_read_with_validity(hashpipe_status_t *st, struct ata_snap_obs_info *obs_info, enum obs_info_validity *validity);
 void ata_snap_obs_info_write_with_validity(hashpipe_status_t *st, struct ata_snap_obs_info *obs_info, enum obs_info_validity obs_info_valid);
 
-char align_blk0_with_obsstart(uint64_t * blk0_start_pktidx, uint32_t obsstart, uint32_t pktidx_per_block);
+char align_blk0_with_obsstart(uint64_t * blk0_start_pktidx, uint64_t obsstart, uint32_t pktidx_per_block);
 
 //
 // The transposition is from a block of ATA SNAP packets,

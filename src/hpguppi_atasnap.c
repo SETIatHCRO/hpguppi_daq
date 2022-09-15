@@ -393,7 +393,7 @@ void ata_snap_obs_info_write_with_validity(hashpipe_status_t *st, struct ata_sna
 
 // Align the blk0_start index to the nearest integer-multiple
 // of pktidx_per_block*ATASNAP_DEFAULT_PKTNTIME away from obsstart.
-char align_blk0_with_obsstart(uint64_t * blk0_start_pktidx, uint32_t obsstart, uint32_t pktidx_per_block){
+char align_blk0_with_obsstart(uint64_t * blk0_start_pktidx, uint64_t obsstart, uint32_t pktidx_per_block){
   //
   // blk0
   //  |  blk
