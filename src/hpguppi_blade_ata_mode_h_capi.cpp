@@ -289,6 +289,7 @@ bool blade_ata_h_compute_step() {
         ModeB->enqueue([&](auto& worker) {
             // Check if next runner has free slot.
             Plan::Available(ModeB);
+            Plan::Available(ModeH);
 
             size_t bufferId;
             // Calls client callback to request empty input buffer.
