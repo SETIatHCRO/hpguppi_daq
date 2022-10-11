@@ -173,6 +173,142 @@ dev:
       # instance_subsystem_thread_masks:
       #   ibv: 
       #     hpguppi_atasnap_obs_rawdisk_thread: false
+vla:
+  prefix_exec: /home/cosmic/dev/hashpipe/src/
+  prefix_lib: /home/cosmic/dev/hpguppi_daq/src/.libs/
+  # hpguppi_plugin:
+  logdir: /home/cosmic/dev/logs
+  # command_prefix:
+  setup_commands:
+    - 16: 
+        - ethtool -L $BINDHOST combined 32
+        - [
+          "set_irq_affinity_cpulist.sh 14,15 $BINDHOST",
+          "set_irq_affinity_cpulist.sh 30,31 $BINDHOST",
+        ]
+        - cpupower -c 0-31 idle-set -d 2
+      24:
+        - ethtool -L $BINDHOST combined 48
+        - [
+          "set_irq_affinity_cpulist.sh 22,23 $BINDHOST",
+          "set_irq_affinity_cpulist.sh 46,47 $BINDHOST",
+        ]
+        - cpupower -c 0-47 idle-set -d 2
+    - ethtool -C $BINDHOST adaptive-rx on rx-frames 8 rx-usecs 0
+    - ethtool -G $BINDHOST rx 8192
+    - cpupower frequency-set -g performance
+  hashpipe_keyfile: /home/cosmic
+  environment:
+    - LD_LIBRARY_PATH=/home/cosmic/dev/hashpipe/src/.libs:/home/cosmic/src/xGPU/src:/home/cosmic/src/uvh5c99/build:/home/cosmic/src/uvh5c99/build/subprojects/radiointerferometryc99:/home/cosmic/dev/blade/install:/home/cosmic/dev/blade/install/lib:/home/cosmic/dev/blade/install/lib/x86_64-linux-gnu
+    - ["CUDA_VISIBLE_DEVICES=0,1", "CUDA_VISIBLE_DEVICES=2,3"]
+  options:
+    - ibv:
+        - HPCONFIG=IBV-FTP-RAW
+        - PROJID=dmpauto
+        - BACKEND=GUPPI
+        - DIRECTIO=1
+      xgpu:
+        - HPCONFIG=IBV-TFP_DP4A-XGPU-UVH5
+        - PROJID=xgpu
+        - BACKEND=uvh5
+        - UVH5TELP=/home/cosmic/dev/telinfo_vla.toml
+        - POLS=rl
+        - NPOL=2
+    - DIRECTIO=1
+    - IBVPKTSZ=42,16,8192
+    - ["CUDADEV=0", "CUDADEV=0"]
+    - BINDPORT=50000
+    - TELESCOP=VLA
+  instance_numanode_bind: [0, 1]
+  instance_datadir: [/mnt/buf0, /mnt/buf1]
+  instance_bindhost: [enp97s0f1, enp225s0f1]
+  thread_mask_lengths:
+    hpguppi_ata_ibv_payload_order_thread:
+      12
+  subsystem_threads:
+    ibv:
+      - hpguppi_ibvpkt_thread
+      - hpguppi_ata_ibv_payload_order_thread
+      - hpguppi_atasnap_obs_rawdisk_thread
+    xgpu:
+      - hpguppi_ibvpkt_thread
+      - hpguppi_ata_ibv_payload_order_thread
+      - hpguppi_ata_xgpu_thread
+      - hpguppi_ata_obs_uvh5disk_thread
+  cpu_core_count_config:
+    16:
+      instance_cpu_core_0: [1, 17]
+    24:
+      instance_cpu_core_0: [1, 25]
+vladev:
+  prefix_exec: /home/cosmic/dev/hashpipe/src/
+  prefix_lib: /home/cosmic/dev/hpguppi_daq/src/.libs/
+  logdir: /home/cosmic/dev/logs
+  setup_commands:
+    - 16: 
+        - ethtool -L $BINDHOST combined 32
+        - [
+          "set_irq_affinity_cpulist.sh 14,15 $BINDHOST",
+          "set_irq_affinity_cpulist.sh 30,31 $BINDHOST",
+        ]
+        - cpupower -c 0-31 idle-set -d 2
+      24:
+        - ethtool -L $BINDHOST combined 48
+        - [
+          "set_irq_affinity_cpulist.sh 22,23 $BINDHOST",
+          "set_irq_affinity_cpulist.sh 46,47 $BINDHOST",
+        ]
+        - cpupower -c 0-47 idle-set -d 2
+    - ethtool -C $BINDHOST adaptive-rx on rx-frames 8 rx-usecs 0
+    - ethtool -G $BINDHOST rx 8192
+    - cpupower frequency-set -g performance
+  hashpipe_keyfile: /home/cosmic
+  environment:
+    - LD_LIBRARY_PATH=/home/cosmic/dev/hashpipe/src/.libs:/home/cosmic/src/xGPU/src:/home/cosmic/src/uvh5c99/build:/home/cosmic/src/uvh5c99/build/subprojects/radiointerferometryc99
+    - ["CUDA_VISIBLE_DEVICES=0,1", "CUDA_VISIBLE_DEVICES=2,3"]
+  options:
+    - xgpu:
+        - HPCONFIG=DEV_IBV-TFPDP4A-XGPU-UVH5
+        - BACKEND=UVH5
+        - PROJID=xGPU
+        - UVH5TELP=/opt/mnt/share/telinfo_ata.toml
+        - POLES=RL
+        - BINDPORT=50000
+      ibv_null:
+        - HPCONFIG=DEV_IBV-NULL
+      test:
+        - HPCONFIG=RAW-FTP-RAW
+        - BACKEND=RAW
+        - PROJID=test
+        - RAWSTEM=/mnt/buf1/dmpauto/GUPPI/guppi_59736_42640_74073972063_J2011-1546_0001
+        - BINDPORT=0
+    - IBVPKTSZ=42,16,8192
+    - CUDADEV=$INSTANCE
+    - TELESCOP=VLA
+  instance_numanode_bind: [0, 1]
+  instance_datadir: [/mnt/buf0, /mnt/buf1]
+  instance_bindhost: [enp97s0f1, enp225s0f1]
+  thread_mask_lengths:
+    hpguppi_ata_ibv_payload_order_thread:
+      12
+  subsystem_threads:
+    xgpu:
+      - hpguppi_ibvpkt_thread
+      - hpguppi_ata_ibv_payload_order_thread
+      - hpguppi_ata_xgpu_thread
+      - hpguppi_ata_obs_uvh5disk_thread
+    ibv_null:
+      - hpguppi_ibvpkt_thread
+      - null_output_thread
+    test:
+      - guppiraw_ibv_packetize_thread
+      - hpguppi_ata_ibv_payload_order_thread
+      - hpguppi_atasnap_obs_rawdisk_thread
+  cpu_core_count_config:
+    16:
+      instance_cpu_core_0: [1, 17]
+    24:
+      instance_cpu_core_0: [1, 25]
 
 
 ##################### Templates #####################
