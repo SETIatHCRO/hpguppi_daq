@@ -217,6 +217,8 @@ def run(
 		for option in system['options']:
 			if isinstance(option, dict) and subsystem in option: # cores_per_cpu/subsystem dict, collect list
 				options.extend(option[subsystem])
+			elif isinstance(option, list) and instance < len(option):
+				options.append(option[instance])
 			else:
 				options.append(option)
 
@@ -287,13 +289,11 @@ def run(
 	if 'hashpipe_keyfile' in system:
 		environment_keys.append('HASHPIPE_KEYFILE={}'.format(system['hashpipe_keyfile']))
 	if 'environment' in system:
-		environment_keys.extend(system['environment'])
+		environment_keys += list(map(lambda kv: kv[instance] if isinstance(kv, list) else kv, system['environment']))
 
 	hashpipe_env = os.environ
 	for env_kv in environment_keys:
-		env_kv_parts = env_kv.split('=')
-		key = env_kv_parts[0]
-		val = env_kv_parts[1]
+		key, val = env_kv.split('=')
 
 		if '$'+key in val:
 			replacement = hashpipe_env[key] if key in hashpipe_env else ''
@@ -399,3 +399,5 @@ if __name__ == '__main__':
 				dry_run = args.dry_run,
 				config_filename = args.configfile
 			)
+
+	exit(0)
