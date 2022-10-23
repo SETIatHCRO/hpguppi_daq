@@ -11,6 +11,32 @@ default_prefix_exec =	"/opt/mnt/bin/"
 default_prefix_lib 	=	"/opt/mnt/lib/"
 default_logdir			= None # Switches off logging
 ############ Hands off from here on
+def index_yaml_value(yaml_value, instance, cpu_count, subsystem):
+	if isinstance(yaml_value, list):
+		return yaml_value[instance]
+	if isinstance(yaml_value, dict):
+		if cpu_count in yaml_value:
+			return yaml_value[cpu_count]
+		return yaml_value[subsystem]
+	return yaml_value
+
+
+def collect_yaml_value(yaml_value, instance, cpu_count, subsystem):
+	collection = []
+	for value in yaml_value:
+		contextual_value = index_yaml_value(value, instance, cpu_count, subsystem)
+		if isinstance(contextual_value, list):
+			# handle nested containers
+			collection += list(
+				map(
+					lambda v: index_yaml_value(v, instance, cpu_count, subsystem) if isinstance(v, list) or isinstance(v, dict) else v,
+					contextual_value
+				)
+			)
+		else:
+			collection.append(contextual_value)
+	return collection
+
 
 def run(
 	system_name,
@@ -214,13 +240,7 @@ def run(
 	}
 
 	if 'options' in system:
-		for option in system['options']:
-			if isinstance(option, dict) and subsystem in option: # cores_per_cpu/subsystem dict, collect list
-				options.extend(option[subsystem])
-			elif isinstance(option, list) and instance < len(option):
-				options.append(option[instance])
-			else:
-				options.append(option)
+		options += collect_yaml_value(system['options'], instance, cores_per_cpu, subsystem)
 
 		# replace keywords
 		for (option_idx, option) in enumerate(options):
@@ -289,7 +309,7 @@ def run(
 	if 'hashpipe_keyfile' in system:
 		environment_keys.append('HASHPIPE_KEYFILE={}'.format(system['hashpipe_keyfile']))
 	if 'environment' in system:
-		environment_keys += list(map(lambda kv: kv[instance] if isinstance(kv, list) else kv, system['environment']))
+		environment_keys += collect_yaml_value(system['environment'], instance, cores_per_cpu, subsystem)
 
 	hashpipe_env = os.environ
 	for env_kv in environment_keys:
@@ -304,22 +324,7 @@ def run(
 		hashpipe_env[key] = val
 
 	if 'setup_commands' in system:
-		setup_commands = system['setup_commands']
-		setup_command_index = 0
-		while setup_command_index < len(setup_commands):
-			setup_command = setup_commands[setup_command_index]
-			setup_command_index += 1
-
-			if isinstance(setup_command, dict): # cores_per_cpu dict, insert commands next and continue
-				assert cores_per_cpu in setup_command, 'Missing an entry for {} cores in the {} Dict of for system {} in {}\n'.format(cores_per_cpu, 'setup_commands', system_name, config_filename, setup_command)
-				if isinstance(setup_command[cores_per_cpu], list):
-					setup_commands[setup_command_index:setup_command_index] = setup_command[cores_per_cpu]
-				else:
-					setup_commands.insert(setup_command_index, setup_command[cores_per_cpu])
-				continue
-			if isinstance(setup_command, list): # instance-indexed list of commands, select appropriately
-				setup_command = setup_command[instance]
-			
+		for setup_command in collect_yaml_value(system['setup_commands'], instance, cores_per_cpu, subsystem):
 			for var,val in _keyword_variable_dict.items():
 				setup_command = setup_command.replace('${}'.format(var), str(val))
 			print('#', setup_command)

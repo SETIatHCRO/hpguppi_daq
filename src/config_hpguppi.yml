@@ -5,6 +5,8 @@ ata:
   logdir: /home/sonata/logs
   # command_prefix:
   setup_commands:
+    - irqbalance --oneshot
+    - systemctl stop irqbalance
     - 16: 
         - ethtool -L $BINDHOST combined 32
         - [
@@ -19,11 +21,16 @@ ata:
           "set_irq_affinity_cpulist.sh 46,47 $BINDHOST",
         ]
         - cpupower -c 0-47 idle-set -d 2
+    - ethtool -A $BINDHOST rx off tx off
     - ethtool -C $BINDHOST adaptive-rx on rx-frames 8 rx-usecs 0
     - ethtool -G $BINDHOST rx 8192
     - cpupower frequency-set -g performance
   hashpipe_keyfile: /home/sonata
   environment:
+    - 16:
+        - IRQBALANCE_BANNED_CPUS=00000000,3ffe3ffe
+      24:
+        - IRQBALANCE_BANNED_CPUS=00003fff,fe3ffffe
     - ATASHAREDIR="/opt/mnt"
     - LD_LIBRARY_PATH=/home/sonata/src/hashpipe/src/.libs:/home/sonata/dev/hdf5_tests/build:/lib/x86_64-linux-gnu/:/opt/mnt/lib
   options:
@@ -90,6 +97,8 @@ dev:
   logdir: /home/sonata/logs
   # command_prefix:
   setup_commands:
+    - irqbalance --oneshot
+    - systemctl stop irqbalance
     - 16: 
         - ethtool -L $BINDHOST combined 32
         - [
@@ -104,11 +113,16 @@ dev:
           "set_irq_affinity_cpulist.sh 46,47 $BINDHOST",
         ]
         - cpupower -c 0-47 idle-set -d 2
+    - ethtool -A $BINDHOST rx off tx off
     - ethtool -C $BINDHOST adaptive-rx on rx-frames 8 rx-usecs 0
     - ethtool -G $BINDHOST rx 8192
     - cpupower frequency-set -g performance
   hashpipe_keyfile: /home/sonata
   environment:
+    - 16:
+        - IRQBALANCE_BANNED_CPUS=00000000,3ffe3ffe
+      24:
+        - IRQBALANCE_BANNED_CPUS=00003fff,fe3ffffe
     - ATASHAREDIR="/opt/mnt"
     - LD_LIBRARY_PATH=/home/sonata/src/hashpipe/src/.libs:/home/sonata/dev/hdf5_tests/build:/lib/x86_64-linux-gnu/:/opt/mnt/lib
   options:
@@ -180,6 +194,8 @@ vla:
   logdir: /home/cosmic/dev/logs
   # command_prefix:
   setup_commands:
+    - irqbalance --oneshot
+    - systemctl stop irqbalance
     - 16: 
         - ethtool -L $BINDHOST combined 32
         - [
@@ -194,11 +210,16 @@ vla:
           "set_irq_affinity_cpulist.sh 46,47 $BINDHOST",
         ]
         - cpupower -c 0-47 idle-set -d 2
+    - ethtool -A $BINDHOST rx off tx off
     - ethtool -C $BINDHOST adaptive-rx on rx-frames 8 rx-usecs 0
     - ethtool -G $BINDHOST rx 8192
     - cpupower frequency-set -g performance
   hashpipe_keyfile: /home/cosmic
   environment:
+    - 16:
+        - IRQBALANCE_BANNED_CPUS=00000000,3ffe3ffe
+      24:
+        - IRQBALANCE_BANNED_CPUS=00003fff,fe3ffffe
     - LD_LIBRARY_PATH=/home/cosmic/dev/hashpipe/src/.libs:/home/cosmic/src/xGPU/src:/home/cosmic/src/uvh5c99/build:/home/cosmic/src/uvh5c99/build/subprojects/radiointerferometryc99:/home/cosmic/dev/blade/install:/home/cosmic/dev/blade/install/lib:/home/cosmic/dev/blade/install/lib/x86_64-linux-gnu
     - ["CUDA_VISIBLE_DEVICES=0,1", "CUDA_VISIBLE_DEVICES=2,3"]
   options:
@@ -245,6 +266,8 @@ vladev:
   prefix_lib: /home/cosmic/dev/hpguppi_daq/src/.libs/
   logdir: /home/cosmic/dev/logs
   setup_commands:
+    - irqbalance --oneshot
+    - systemctl stop irqbalance
     - 16: 
         - ethtool -L $BINDHOST combined 32
         - [
@@ -259,11 +282,16 @@ vladev:
           "set_irq_affinity_cpulist.sh 46,47 $BINDHOST",
         ]
         - cpupower -c 0-47 idle-set -d 2
+    - ethtool -A $BINDHOST rx off tx off
     - ethtool -C $BINDHOST adaptive-rx on rx-frames 8 rx-usecs 0
     - ethtool -G $BINDHOST rx 8192
     - cpupower frequency-set -g performance
   hashpipe_keyfile: /home/cosmic
   environment:
+    - 16:
+        - IRQBALANCE_BANNED_CPUS=00000000,3ffe3ffe
+      24:
+        - IRQBALANCE_BANNED_CPUS=00003fff,fe3ffffe
     - LD_LIBRARY_PATH=/home/cosmic/dev/hashpipe/src/.libs:/home/cosmic/src/xGPU/src:/home/cosmic/src/uvh5c99/build:/home/cosmic/src/uvh5c99/build/subprojects/radiointerferometryc99
     - ["CUDA_VISIBLE_DEVICES=0,1", "CUDA_VISIBLE_DEVICES=2,3"]
   options:
