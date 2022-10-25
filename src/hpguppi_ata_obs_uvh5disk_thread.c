@@ -97,7 +97,7 @@ static void *run(hashpipe_thread_args_t * args)
 
   /* Misc counters, etc */
   int i, j;
-  uint64_t obs_npacket_total=0, obs_ndrop_total=0;
+  uint64_t obs_npacket_total=0;
   uint64_t ndrop_obs_start=0, ndrop_obs_current=0;
   uint32_t block_npacket=0, block_ndrop=0;
 
@@ -234,7 +234,6 @@ static void *run(hashpipe_thread_args_t * args)
       case RECORD:// If should RECORD
         if (state != RECORD){
           obs_npacket_total = 0;
-          obs_ndrop_total = 0;
           if(state != ARMED){// didn't arm correctly
             state = ARMED;
             update_stt_status_keys(st, state, obs_start_pktidx, mjd);
@@ -258,7 +257,6 @@ static void *run(hashpipe_thread_args_t * args)
         hgetu4(datablock_header, "NPKT", &block_npacket);
         hgetu4(datablock_header, "NDROP", &block_ndrop);
         obs_npacket_total += block_npacket;
-        obs_ndrop_total += block_ndrop;
         break;
       case ARMED:// If should ARM,
         if(state != ARMED){
