@@ -347,6 +347,7 @@ static void *run(hashpipe_thread_args_t * args)
           obs_npacket_total = 0;
           obs_ndrop_total = 0;
           if(state != ARMED){// didn't arm correctly
+            state = ARMED;
             update_stt_status_keys(st, state, obs_start_pktidx, mjd);
             hputu4(datablock_header, "STTVALID", 1);
             hputu4(datablock_header, "STT_IMJD", mjd->stt_imjd);
