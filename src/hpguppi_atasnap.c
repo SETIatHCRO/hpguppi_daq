@@ -328,6 +328,12 @@ char ata_snap_obs_info_read_with_validity(hashpipe_status_t *st, struct ata_snap
     hgetr8(st->buf, "OBSBW",    &obs_info->obs_bw);
   }
   hashpipe_status_unlock_safe(st);
+  if(obs_info->nants == 0) {
+    obs_info->nants = 1;
+  }
+  if(obs_info->nchan == 0) {
+    obs_info->nchan = 1;
+  }
   obs_info->nchan /= obs_info->nants;
 
   // if no change in obs_info
@@ -346,7 +352,7 @@ char ata_snap_obs_info_read_with_validity(hashpipe_status_t *st, struct ata_snap
     return 0;
   }
   if(ata_snap_obs_info_valid(*obs_info)) { // if change in obs_info and obs_info seems valid
-    ata_snap_populate_block_related_fields(obs_info->eff_block_size, obs_info);
+    ata_snap_populate_block_related_fields(BLOCK_DATA_SIZE, obs_info);
     *validity = OBS_SEEMS_VALID;
     return 1;
   } else { // if change in obs_info and obs_info seems invalid
@@ -414,26 +420,27 @@ char align_blk0_with_obsstart(uint64_t * blk0_start_pktidx, uint64_t obsstart, u
   //      >__0___|___|
   //      |^^|offset
   //      0___|___...
+  hashpipe_info(
+    __FUNCTION__,
+    "blk0_start_pktidx: %ld, obsstart: %ld, pktidx_per_block: %ld, ATASNAP_DEFAULT_PKTNTIME: %d", 
+    *blk0_start_pktidx,
+    obsstart,
+    pktidx_per_block,
+    ATASNAP_DEFAULT_PKTNTIME
+  );
 
-  int64_t blk_obsstart_alignment_offset = abs(obsstart - *blk0_start_pktidx);
-  // round offset up to nearest multiple of ATASNAP_DEFAULT_PKTNTIME
-  blk_obsstart_alignment_offset = ((blk_obsstart_alignment_offset+ATASNAP_DEFAULT_PKTNTIME-1)/ATASNAP_DEFAULT_PKTNTIME)*ATASNAP_DEFAULT_PKTNTIME;
-  // mod offset to less than one block
-  blk_obsstart_alignment_offset %= pktidx_per_block;
-
-  if(blk_obsstart_alignment_offset != 0) {
-    if(*blk0_start_pktidx + pktidx_per_block >= obsstart) {
-      // block-range of reference pktidx is already past obsstart, so
-      // subtract rather: the offset motion is inclusive of more packets
-      blk_obsstart_alignment_offset = blk_obsstart_alignment_offset - pktidx_per_block;
-    }
-    // else obsstart is not near, just align to next block-range
-    *blk0_start_pktidx += blk_obsstart_alignment_offset;
-
-    hashpipe_info(__FUNCTION__,
-        "working blocks reinit to align pktstart to obsstart\n\t\toffset of %ld",
-        blk_obsstart_alignment_offset);
-    return 1;
+  if ((*blk0_start_pktidx - obsstart) % pktidx_per_block == 0) {
+    return 0;
   }
-  return 0;
+
+  // assume ATASNAP_DEFAULT_PKTIME is a factor of pktidx_per_block
+  // adjust to the blk0_start_pktidx-closest pktidx_per_block distance away from obsstart
+  *blk0_start_pktidx = obsstart - ((obsstart - *blk0_start_pktidx ) / pktidx_per_block) * pktidx_per_block;
+
+  hashpipe_info(
+    __FUNCTION__,
+    "working blocks reinit to align pktstart to obsstart: blk0=%ld",
+    *blk0_start_pktidx
+  );
+  return 1;
 }
