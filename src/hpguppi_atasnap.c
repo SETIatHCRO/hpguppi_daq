@@ -378,7 +378,7 @@ void ata_snap_obs_info_write_with_validity(hashpipe_status_t *st, struct ata_sna
       obsnchan = ata_snap_obsnchan(*obs_info);
       spectra_per_usec = ((double) obs_info->nchan)/obs_info->obs_bw;
       packets_per_spectra = (double) obsnchan / (obs_info->pkt_nchan * obs_info->pkt_ntime); 
-      packets_per_usec = spectra_per_usec * packets_per_spectra;
+      packets_per_usec = packets_per_spectra / spectra_per_usec;
       hputs(st->buf, "OBSINFO", "VALID");
     } else {
       obsnchan = 1;
