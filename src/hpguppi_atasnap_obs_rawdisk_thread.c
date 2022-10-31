@@ -232,8 +232,8 @@ static void *run(hashpipe_thread_args_t * args)
                 "obs_start %lu obs_stop %lu blk_start_pktidx %lu blk_stop_pktidx %lu",
                 obs_start_pktidx, obs_stop_pktidx, block_start_pktidx, block_stop_pktidx);
             }
-            hput_obsdone(st, 1);
           }
+          hput_obsdone(st, 1);
           flag_state_update = 1;
           state = IDLE;
           // Update STT with state = IDLE, setting STTVALID = 0
@@ -250,8 +250,8 @@ static void *run(hashpipe_thread_args_t * args)
             hputu4(datablock_header, "STT_IMJD", mjd->stt_imjd);
             hputu4(datablock_header, "STT_SMJD", mjd->stt_smjd);
             hputr8(datablock_header, "STT_OFFS", mjd->stt_offs);
-            hput_obsdone(st, 0);
           }
+          hput_obsdone(st, 0);
           flag_state_update = 1;
           state = RECORD;
           directio = hpguppi_read_directio_mode(datablock_header);

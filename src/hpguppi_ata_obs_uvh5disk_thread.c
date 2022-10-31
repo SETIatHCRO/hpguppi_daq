@@ -241,8 +241,8 @@ static void *run(hashpipe_thread_args_t * args)
             hputu4(datablock_header, "STT_IMJD", mjd->stt_imjd);
             hputu4(datablock_header, "STT_SMJD", mjd->stt_smjd);
             hputr8(datablock_header, "STT_OFFS", mjd->stt_offs);
-            hput_obsdone(st, 0);
           }
+          hput_obsdone(st, 0);
           flag_state_update = 1;
           state = RECORD;
           hgeti4(datablock_header, "STTVALID", &stt_valid);

@@ -376,6 +376,7 @@ static void *run(hashpipe_thread_args_t * args)
           flag_state_update = 1;
           state = ARMED;
           update_stt_status_keys(st, state, obs_start_pktidx, mjd);
+          hput_obsdone(st, 0);
         }
       default:
         break;

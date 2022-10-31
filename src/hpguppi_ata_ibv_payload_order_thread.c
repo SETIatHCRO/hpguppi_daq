@@ -560,7 +560,7 @@ int debug_i=0, debug_j=0;
     ata_snap_parse_ibv_packet(p_pkt, &pkt_info);
 
     // Only do the work if packets seem to be in range, or the downstream controlled `observation_complete` is low
-    if(pkt_info.pktidx <= obs_stop_seq_num || !observation_complete) {
+    if((pkt_info.pktidx <= obs_stop_seq_num || !observation_complete) && obs_info_validity > OBS_INVALID) {
       // Check the first packet's timestamp, to determine reinit_blocks
       //  This works because it is figured that a block filled with packets
       //  will contain packets with indices that place them in two adjacent downstream blocks.
@@ -647,7 +647,7 @@ int debug_i=0, debug_j=0;
         //  negative values that indicate invalid obs_info
       #endif
       for(i=0; i < slots_per_block; i++) {
-        if(obs_info_validity < OBS_SEEMS_VALID){
+        if(PKT_OBS_FENG_flagged||PKT_OBS_SCHAN_flagged||PKT_OBS_NCHAN_flagged||PKT_OBS_PKTNTIME_flagged||PKT_OBS_PKTIDX_flagged){
           continue;
         }
 
@@ -705,7 +705,6 @@ int debug_i=0, debug_j=0;
               LATE_PKTIDX_flagged = 1;
               hashpipe_error(thread_name, "Packet ignored: determined wblk_idx = %d", wblk_idx);
             }
-            obs_info_validity = OBS_VALID;
             break;
           case PKT_OBS_FENG:
             if(!PKT_OBS_FENG_flagged){
@@ -778,34 +777,32 @@ int debug_i=0, debug_j=0;
 
     // Handle 'min' reduced OBS_flags
     if(obs_info_validity == OBS_INVALID_FENG){
-      obs_info_validity = OBS_INVALID_FENG;
       hashpipe_status_lock_safe(st);
         hputs(st->buf, "OBSINFO", "INVALID FENG");
       hashpipe_status_unlock_safe(st);
     }
     else if(obs_info_validity == OBS_INVALID_SCHAN){
-      obs_info_validity = OBS_INVALID_SCHAN;
       hashpipe_status_lock_safe(st);
         hputs(st->buf, "OBSINFO", "INVALID SCHAN");
       hashpipe_status_unlock_safe(st);
     }
     else if(obs_info_validity == OBS_INVALID_NCHAN){
-      obs_info_validity = OBS_INVALID_NCHAN;
       hashpipe_status_lock_safe(st);
         hputs(st->buf, "OBSINFO", "INVALID NCHAN");
       hashpipe_status_unlock_safe(st);
     }
     else if(obs_info_validity == OBS_INVALID_PKTNTIME){
-      obs_info_validity = OBS_INVALID_PKTNTIME;
       hashpipe_status_lock_safe(st);
         hputs(st->buf, "OBSINFO", "INVALID PKTNCHAN");
       hashpipe_status_unlock_safe(st);
     }
     else if(obs_info_validity == OBS_INVALID_PKTIDX){
-      obs_info_validity = OBS_INVALID_PKTIDX;
       hashpipe_status_lock_safe(st);
         hputs(st->buf, "OBSINFO", "INVALID PKTIDX !%%= ATASNAP_DEFAULT_PKTNTIME");
       hashpipe_status_unlock_safe(st);
+    }
+    else if(obs_info_validity == OBS_SEEMS_VALID) {
+      obs_info_validity = OBS_VALID;
     }
 
     hashpipe_status_lock_safe(st);
