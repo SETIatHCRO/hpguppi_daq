@@ -366,6 +366,9 @@ char ata_snap_obs_info_read_with_validity(hashpipe_status_t *st, struct ata_snap
 void ata_snap_obs_info_write_with_validity(hashpipe_status_t *st, struct ata_snap_obs_info *obs_info, enum obs_info_validity obs_info_valid)
 {
   uint32_t obsnchan = 0;
+  double spectra_per_usec = 0.0;
+  double packets_per_spectra = 0.0;
+  double packets_per_usec = 0.0;
 
   // Get any obs info from status buffer, store values
   hashpipe_status_lock_safe(st);
@@ -373,6 +376,9 @@ void ata_snap_obs_info_write_with_validity(hashpipe_status_t *st, struct ata_sna
     // If obs_info is valid
     if(obs_info_valid >= OBS_SEEMS_VALID) {
       obsnchan = ata_snap_obsnchan(*obs_info);
+      spectra_per_usec = ((double) obs_info->nchan)/obs_info->obs_bw;
+      packets_per_spectra = (double) obsnchan / (obs_info->pkt_nchan * obs_info->pkt_ntime); 
+      packets_per_usec = spectra_per_usec * packets_per_spectra;
       hputs(st->buf, "OBSINFO", "VALID");
     } else {
       obsnchan = 1;
@@ -393,6 +399,9 @@ void ata_snap_obs_info_write_with_validity(hashpipe_status_t *st, struct ata_sna
     hputi4(st->buf, "BLOCSIZE", obs_info->eff_block_size);
     hputu4(st->buf, "PIPERBLK", obs_info->pktidx_per_block);
     hputu4(st->buf, "PKTSIZE",  obs_info->pkt_data_size);
+
+    hputr8(st->buf, "PPSXPCT", 1e6 * packets_per_usec);
+    hputr8(st->buf, "GBPSXPCT", (obs_info->pkt_data_size+42) * 8 * packets_per_usec / 1e3);
   }
   hashpipe_status_unlock_safe(st);
 }
