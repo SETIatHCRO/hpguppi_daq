@@ -400,8 +400,8 @@ void ata_snap_obs_info_write_with_validity(hashpipe_status_t *st, struct ata_sna
     hputu4(st->buf, "PIPERBLK", obs_info->pktidx_per_block);
     hputu4(st->buf, "PKTSIZE",  obs_info->pkt_data_size);
 
-    hputr8(st->buf, "PPSXPCT", 1e6 * packets_per_usec);
-    hputr8(st->buf, "GBPSXPCT", (obs_info->pkt_data_size+42) * 8 * packets_per_usec / 1e3);
+    hputr8(st->buf, "XPCTPPS", 1e6 * packets_per_usec);
+    hputr8(st->buf, "XPCTGBPS", (obs_info->pkt_data_size+42) * 8 * packets_per_usec / 1e3);
   }
   hashpipe_status_unlock_safe(st);
 }
