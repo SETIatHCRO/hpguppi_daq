@@ -64,7 +64,6 @@ void hpguppi_fil_read_header_from_status(
   double ra;  // hours
   double dec; // degrees
   double mjd;
-
   hgeti4(statusbuf, "BLOCSIZE", &blocsize);
   hgeti4(statusbuf, "NPOL", &npol);
   hgeti4(statusbuf, "OBSNCHAN", &obsnchan);
@@ -204,6 +203,8 @@ static void *run(hashpipe_thread_args_t * args)
   unsigned char base_filename_stem_start;
 
   struct mjd_t *mjd = malloc(sizeof(struct mjd_t));
+  char statuskey_value[80];
+  char statuskey_key[9];
 
   /* Misc counters, etc */
   int i;
@@ -433,6 +434,20 @@ static void *run(hashpipe_thread_args_t * args)
           filbanks[i]->header->ibeam = i;
           if(incoherent_beam_enabled && i == filbank_header.nbeams-1) {
             filbanks[i]->header->ibeam *= -1;
+          }
+          else {
+            // not incoherent beam, set appropriate coordinates
+            strncpy(statuskey_value, "0.0", 80);
+            sprintf(statuskey_key, "RA_OFF%d", i%10);
+            hgets(datablock_header, statuskey_key, 72, statuskey_value);
+            filbanks[i]->header->src_raj = filterbank_dmsstr_to_ddd(statuskey_value);
+            filbanks[i]->header->src_raj = filterbank_ddd_to_dms(filbanks[i]->header->src_raj);
+
+            strncpy(statuskey_value, "0.0", 80);
+            sprintf(statuskey_key, "DEC_OFF%d", i%10);
+            hgets(datablock_header, statuskey_key, 72, statuskey_value);
+            filbanks[i]->header->src_dej = filterbank_dmsstr_to_ddd(statuskey_value);
+            filbanks[i]->header->src_dej = filterbank_ddd_to_dms(filbanks[i]->header->src_dej);
           }
           write_header(*filbanks[i]);
         }        
