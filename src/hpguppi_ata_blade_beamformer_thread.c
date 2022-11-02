@@ -432,6 +432,7 @@ void blade_cb_input_buffer_enqueued(void* user_data_void, size_t buffer_id) {
       hputi4(databuf_header, "NPOL", BLADE_ATA_CONFIG.numberOfOutputPolarizations);
 
       tbin *= BLADE_ATA_CONFIG.channelizerRate;
+      tbin *= BLADE_ATA_CONFIG.integrationSize;
       tbin *= BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
 
       // negate OBSBW to indicate descending frequency-channel order

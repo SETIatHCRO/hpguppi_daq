@@ -25,10 +25,6 @@ static struct {
     std::unordered_map<U64, void*> OutputPointerMap;
     std::unordered_map<U64, size_t> InputIdMap;
     std::unordered_map<U64, size_t> OutputIdMap;
-    
-    struct {
-        BladePipeline::Config B;
-    } RunnersConfig;
 
     struct {
         std::unique_ptr<Runner<BladePipeline>> B;
@@ -81,86 +77,84 @@ bool blade_ata_b_initialize(
     memcpy(antennaCalibrationsCpp.data(), antennaCalibrations,
             antennaCalibrationsCpp.size()*sizeof(antennaCalibrationsCpp[0]));
 
-    State.RunnersConfig.B = {      
-        .inputDimensions = {
-            .A = ata_b_config.inputDims.NANTS,
-            .F = ata_b_config.inputDims.NCHANS,
-            .T = ata_b_config.inputDims.NTIME,
-            .P = ata_b_config.inputDims.NPOLS,
-        },
-  
-        .preBeamformerChannelizerRate = ata_b_config.channelizerRate,
+    ArrayDimensions beamformerInputDimensions = ArrayDimensions({
+        .A = ata_b_config.inputDims.NANTS,
+        .F = ata_b_config.inputDims.NCHANS,
+        .T = ata_b_config.inputDims.NTIME,
+        .P = ata_b_config.inputDims.NPOLS,
+    });
 
-        .phasorObservationFrequencyHz = observationMeta->rfFrequencyHz,
-        .phasorChannelBandwidthHz = observationMeta->channelBandwidthHz,
-        .phasorTotalBandwidthHz = observationMeta->totalBandwidthHz,
-        .phasorFrequencyStartIndex = observationMeta->frequencyStartIndex,
-        .phasorReferenceAntennaIndex = observationMeta->referenceAntennaIndex,
-        .phasorArrayReferencePosition = {
-            .LON = arrayReferencePosition->LON,
-            .LAT = arrayReferencePosition->LAT,
-            .ALT = arrayReferencePosition->ALT
-        },
-        .phasorBoresightCoordinate = {
-            .RA = obs_phase_center_radecrad[0],
-            .DEC = obs_phase_center_radecrad[1]
-        },
-        .phasorAntennaPositions = antennaPositions,
-        .phasorAntennaCalibrations = {},
-        .phasorBeamCoordinates = beamCoordinates,
-
-        .beamformerIncoherentBeam = false,
-
-        .detectorEnable = false,
-        .detectorIntegrationSize = 1,
-        .detectorNumberOfOutputPolarizations = 1,
-
-        .castBlockSize = ata_b_config.castBlockSize,
-        .channelizerBlockSize = ata_b_config.channelizerBlockSize,
-        .beamformerBlockSize = ata_b_config.beamformerBlockSize,
-        .detectorBlockSize = ata_b_config.beamformerBlockSize
-    };
-
-    ArrayTensorDimensions* beamformerInputDimensions = &State.RunnersConfig.B.inputDimensions;
-
-    State.RunnersConfig.B.phasorAntennaCalibrations.resize(
-        beamformerInputDimensions->numberOfAspects() *
-        beamformerInputDimensions->numberOfFrequencyChannels() *
-        State.RunnersConfig.B.preBeamformerChannelizerRate *
-        beamformerInputDimensions->numberOfPolarizations()
-    );
+    ArrayTensor phasorAntennaCalibrations = ArrayTensor<Device::CPU, CF64>({
+        ata_b_config.inputDims.NANTS,
+        ata_b_config.inputDims.NCHANS * ata_b_config.channelizerRate,
+        1,
+        ata_b_config.inputDims.NPOLS,
+    });
 
     const size_t calAntStride = 1;
-    const size_t calPolStride = beamformerInputDimensions->numberOfAspects() * calAntStride;
-    const size_t calChnStride = beamformerInputDimensions->numberOfPolarizations() * calPolStride;
+    const size_t calPolStride = beamformerInputDimensions.numberOfAspects() * calAntStride;
+    const size_t calChnStride = beamformerInputDimensions.numberOfPolarizations() * calPolStride;
 
     const size_t weightsPolStride = 1;
-    const size_t weightsChnStride = beamformerInputDimensions->numberOfPolarizations() * weightsPolStride;
-    const size_t weightsAntStride = beamformerInputDimensions->numberOfFrequencyChannels() * State.RunnersConfig.B.preBeamformerChannelizerRate * weightsChnStride;
-    BL_INFO("Expanding the {} coarse-channel coefficients by a factor of {}.", beamformerInputDimensions->numberOfFrequencyChannels(), State.RunnersConfig.B.preBeamformerChannelizerRate);
+    const size_t weightsChnStride = beamformerInputDimensions.numberOfPolarizations() * weightsPolStride;
+    const size_t weightsAntStride = beamformerInputDimensions.numberOfFrequencyChannels() * ata_b_config.channelizerRate * weightsChnStride;
+    BL_INFO("Expanding the {} coarse-channel coefficients by a factor of {}.", beamformerInputDimensions.numberOfFrequencyChannels(), ata_b_config.channelizerRate);
 
     U64 inputIdx, frqIdx, outputIdx, antIdx, chnIdx, polIdx, fchIdx;
-    for (antIdx = 0; antIdx < beamformerInputDimensions->numberOfAspects(); antIdx++) {
-        for (chnIdx = 0; chnIdx < beamformerInputDimensions->numberOfFrequencyChannels(); chnIdx++) {
-            for (polIdx = 0; polIdx < beamformerInputDimensions->numberOfPolarizations(); polIdx++) {
+    for (antIdx = 0; antIdx < beamformerInputDimensions.numberOfAspects(); antIdx++) {
+        for (chnIdx = 0; chnIdx < beamformerInputDimensions.numberOfFrequencyChannels(); chnIdx++) {
+            for (polIdx = 0; polIdx < beamformerInputDimensions.numberOfPolarizations(); polIdx++) {
                 inputIdx = chnIdx * calChnStride +
                     polIdx * calPolStride + 
                     antIdx * calAntStride;
-                for (fchIdx = 0; fchIdx < State.RunnersConfig.B.preBeamformerChannelizerRate; fchIdx++) {
-                    frqIdx = chnIdx * State.RunnersConfig.B.preBeamformerChannelizerRate + fchIdx;
+                for (fchIdx = 0; fchIdx < ata_b_config.channelizerRate; fchIdx++) {
+                    frqIdx = chnIdx * ata_b_config.channelizerRate + fchIdx;
                     outputIdx = antIdx * weightsAntStride +
                         polIdx * weightsPolStride +
                         frqIdx * weightsChnStride;
 
-                    State.RunnersConfig.B.phasorAntennaCalibrations[outputIdx] = antennaCalibrationsCpp[inputIdx];
+                    phasorAntennaCalibrations[outputIdx] = antennaCalibrationsCpp[inputIdx];
                 }
             }
         }
     }
-    
+
     State.RunnersInstances.B = Runner<BladePipeline>::New(
         numberOfWorkers,
-        State.RunnersConfig.B
+        {      
+            .inputDimensions = beamformerInputDimensions,
+    
+            .preBeamformerChannelizerRate = ata_b_config.channelizerRate,
+
+            .phasorObservationFrequencyHz = observationMeta->rfFrequencyHz,
+            .phasorChannelBandwidthHz = observationMeta->channelBandwidthHz,
+            .phasorTotalBandwidthHz = observationMeta->totalBandwidthHz,
+            .phasorFrequencyStartIndex = observationMeta->frequencyStartIndex,
+            .phasorReferenceAntennaIndex = observationMeta->referenceAntennaIndex,
+            .phasorArrayReferencePosition = {
+                .LON = arrayReferencePosition->LON,
+                .LAT = arrayReferencePosition->LAT,
+                .ALT = arrayReferencePosition->ALT
+            },
+            .phasorBoresightCoordinate = {
+                .RA = obs_phase_center_radecrad[0],
+                .DEC = obs_phase_center_radecrad[1]
+            },
+            .phasorAntennaPositions = antennaPositions,
+            .phasorAntennaCalibrations = phasorAntennaCalibrations,
+            .phasorBeamCoordinates = beamCoordinates,
+
+            .beamformerIncoherentBeam = false,
+
+            .detectorEnable = false,
+            .detectorIntegrationSize = 1,
+            .detectorNumberOfOutputPolarizations = 1,
+
+            .castBlockSize = ata_b_config.castBlockSize,
+            .channelizerBlockSize = ata_b_config.channelizerBlockSize,
+            .beamformerBlockSize = ata_b_config.beamformerBlockSize,
+            .detectorBlockSize = ata_b_config.beamformerBlockSize
+        }
     );
 
     State.InputPointerMap.reserve(numberOfWorkers);

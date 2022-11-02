@@ -38,7 +38,7 @@ static const struct blade_ata_mode_h_config BLADE_ATA_MODE_H_CONFIG = {
     BLADE_ATA_MODE_H_OUTPUT_NBEAM, // .beamformerBeams
     BLADE_ATA_MODE_H_ACCUMULATE_RATE, // .acumulateRate
     BLADE_ATA_MODE_H_OUTPUT_NPOL, // .numberOfOutputPolarizations
-    1, // .integrationSize
+    BLADE_ATA_MODE_H_INTEGRATION_SIZE, // .integrationSize
 
     BLADE_ATA_MODE_H_OUTPUT_MEMCPY2D_WIDTH, // .outputMemWidth
     BLADE_ATA_MODE_H_OUTPUT_MEMCPY2D_PAD, // .outputMemPad
