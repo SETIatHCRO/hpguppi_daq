@@ -21,15 +21,15 @@ AC_DEFUN([AX_CHECK_BLADE], [
     blade_enabled=0;
   else
     # test blade before enabling
-    AC_CHECK_FILE([${BLADEDIR}/include/blade/pipelines/ata/mode_a.hh],
+    AC_CHECK_FILE([${BLADEDIR}/include/blade/plan.hh],
                   # Found
                   AC_SUBST(BLADE_INCDIR,${BLADEDIR}/include),
                   # Not found there: check BLADEDIR
-                  AC_CHECK_FILE([${BLADEDIR}/../include/blade/pipelines/ata/mode_a.hh],
+                  AC_CHECK_FILE([${BLADEDIR}/../include/blade/plan.hh],
                                 # Found
                                 AC_SUBST(BLADE_INCDIR,${BLADEDIR}/../include),
                                 # Not found there: error
-                                AC_MSG_ERROR([mode_a.hh header file not found])
+                                AC_MSG_ERROR([plan.hh header file not found])
                   )
     )
 
