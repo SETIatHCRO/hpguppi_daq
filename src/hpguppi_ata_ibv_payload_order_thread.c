@@ -825,6 +825,9 @@ int debug_i=0, debug_j=0;
       clock_gettime(CLOCK_MONOTONIC, &ts_stop_block);
 
       datablock_header = datablock_stats_header(&wblk[0]);
+      hashpipe_status_lock_safe(st);
+        memcpy(datablock_header, st->buf, BLOCK_HDR_SIZE);
+      hashpipe_status_unlock_safe(st);
       hputu8(datablock_header, "PKTIDX", wblk[0].packet_idx);
       hputu8(datablock_header, "BLKSTART", wblk[0].packet_idx);
       hputu8(datablock_header, "BLKSTOP", wblk[1].packet_idx);
