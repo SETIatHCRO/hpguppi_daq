@@ -251,9 +251,6 @@ bool blade_ata_b_compute_step() {
     auto& ModeB = State.RunnersInstances.B; 
     if (prefetch) {
         ModeB->enqueue([&](auto& worker) {
-            // Check if next runner has free slot.
-            Plan::Available(ModeB);
-
             size_t bufferId_input;
             size_t bufferId_output;
             // Calls client callback to request empty input buffer.

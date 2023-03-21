@@ -19,10 +19,11 @@
 #include <hashpipe.h>
 
 #include "hpguppi_databuf.h"
+#include "uvh5.h"
 
 #define XGPU_BLOCK_DATA_SIZE 2*BLOCK_DATA_SIZE // in bytes, from guppi_daq_server
 
-// #define XGPU_INTEGRATE_AS_CF64_ON_CPU
+#define XGPU_INTEGRATE_AS_CF64_ON_CPU
 
 #ifdef XGPU_INTEGRATE_AS_CF64_ON_CPU
 #define XGPU_OUTPUT_BLOCK_ELEMENT_T UVH5_CF64_t

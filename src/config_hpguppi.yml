@@ -9,18 +9,19 @@ ata:
     - systemctl stop irqbalance
     - 16: 
         - ethtool -L $BINDHOST combined 32
+        - cpupower -c 0-31 idle-set -d 2
         - [
           "set_irq_affinity_cpulist.sh 14,15 $BINDHOST",
           "set_irq_affinity_cpulist.sh 30,31 $BINDHOST",
         ]
-        - cpupower -c 0-31 idle-set -d 2
       24:
         - ethtool -L $BINDHOST combined 48
+        - cpupower -c 0-47 idle-set -d 2
         - [
           "set_irq_affinity_cpulist.sh 22,23 $BINDHOST",
           "set_irq_affinity_cpulist.sh 46,47 $BINDHOST",
         ]
-        - cpupower -c 0-47 idle-set -d 2
+    - show_irq_affinity.sh $BINDHOST
     - ethtool -A $BINDHOST rx off tx off
     - ethtool -C $BINDHOST adaptive-rx on rx-frames 8 rx-usecs 0
     - ethtool -G $BINDHOST rx 8192
@@ -32,20 +33,40 @@ ata:
       24:
         - IRQBALANCE_BANNED_CPUS=00003fff,fe3ffffe
     - ATASHAREDIR="/opt/mnt"
-    - LD_LIBRARY_PATH=/home/sonata/src/hashpipe/src/.libs:/home/sonata/dev/hdf5_tests/build:/lib/x86_64-linux-gnu/:/opt/mnt/lib
+    - LD_LIBRARY_PATH=/home/sonata/src/hashpipe/src/.libs:/opt/mnt/src/uvh5c99/build:/opt/mnt/src/blade/install/lib:/opt/mnt/src/blade/install/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu/:/opt/mnt/lib:/home/sonata/dev/filterbankh5c99/install:/usr/local/cuda-11.8.0/lib64/
   options:
     - ibv:
         - HPCONFIG=IBV-FTP-DISK
         - PROJID=dmpauto
-      ibv_blade:
-        - HPCONFIG=IBV-FTP-BLADE-DISK
+      ibv_blade_b:
+        - HPCONFIG=IBV-FTP-BLADE_B-RAW
         - PROJID=blade
+        - BACKEND=GUPPI
+        - TELINFOP=/opt/mnt/share/telinfo_ata.toml
+        - OBSINFOP=/opt/mnt/share/obsinfo.toml
+        - CALWGHTP=/opt/mnt/share/ant_weights_1+0j.bin
+      ibv_blade_a:
+        - HPCONFIG=IBV-FTP-BLADE_A-FIL
+        - PROJID=blade
+        - BACKEND=FIL
+        - TELINFOP=/opt/mnt/share/telinfo_ata.toml
+        - OBSINFOP=/opt/mnt/share/obsinfo.toml
+        - CALWGHTP=/opt/mnt/share/ant_weights_1+0j.bin
+      ibv_blade_h:
+        - HPCONFIG=DEV_IBV-FTP-BLADE_H-FIL
+        - PROJID=blade
+        - BACKEND=FIL
+        - TELINFOP=/opt/mnt/share/telinfo_ata.toml
+        - OBSINFOP=/opt/mnt/share/obsinfo.toml
+        - CALWGHTP=/opt/mnt/share/ant_weights_1+0j.bin
       ibv_xgpu:
         - HPCONFIG=IBV-TFP_DP4A-xGPU-UVH5
         - BACKEND=UVH5
         - PROJID=xGPU
         - UVH5TELP=/opt/mnt/share/telinfo_ata.toml
         - UVH5OBSP=/opt/mnt/share/obsinfo.toml
+        - XGPUINT=4
+        - POLS=xy
     - DIRECTIO=1
     - IBVPKTSZ=42,16,8208
     # - IBVPKTSZ=42,16,4112
@@ -57,7 +78,7 @@ ata:
   instance_bindhost: [enp97s0f1, enp225s0f1]
   thread_mask_lengths:
     hpguppi_ata_ibv_payload_order_thread:
-      12
+      10
   subsystem_threads:
     _:
       - hpguppi_ibvpkt_thread
@@ -68,15 +89,26 @@ ata:
       - hpguppi_ibvpkt_thread
       - hpguppi_ata_ibv_payload_order_thread
       - hpguppi_atasnap_obs_rawdisk_thread
-    ibv_blade:
+    ibv_blade_b:
       - hpguppi_ibvpkt_thread
       - hpguppi_ata_ibv_payload_order_thread
       - hpguppi_ata_blade_beamformer_thread
       - hpguppi_atasnap_obs_rawdisk_thread
+    ibv_blade_a:
+      - hpguppi_ibvpkt_thread
+      - hpguppi_ata_ibv_payload_order_thread
+      - hpguppi_ata_blade_beamformer_thread
+      - hpguppi_ata_fildisk_thread
+    ibv_blade_h:
+      - hpguppi_ibvpkt_thread
+      - hpguppi_ata_ibv_payload_order_thread
+      - hpguppi_ata_blade_beamformer_thread
+      - hpguppi_ata_fildisk_thread
     ibv_xgpu:
       - hpguppi_ibvpkt_thread
       - hpguppi_ata_ibv_payload_order_thread
       - hpguppi_ata_xgpu_thread
+      - hpguppi_ata_xintegration_thread
       - hpguppi_ata_obs_uvh5disk_thread
   cpu_core_count_config:
     16:
@@ -124,15 +156,15 @@ dev:
       24:
         - IRQBALANCE_BANNED_CPUS=00003fff,fe3ffffe
     - ATASHAREDIR="/opt/mnt"
-    - LD_LIBRARY_PATH=/home/sonata/src/hashpipe/src/.libs:/home/sonata/dev/hdf5_tests/build:/lib/x86_64-linux-gnu/:/opt/mnt/lib
+    - LD_LIBRARY_PATH=/home/sonata/dev/hashpipe/src/.libs:/home/sonata/dev/uvh5c99/build:/home/sonata/dev/uvh5c99/build/subprojects/radiointerferometryc99:/home/sonata/dev/blade/install:/home/sonata/dev/blade/install/lib:/home/sonata/dev/blade/install/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu/:/opt/mnt/lib:/usr/local/cuda-11.8.0/lib64/
   options:
     - xgpu:
         - HPCONFIG=DEV_IBV-TFPDP4A-XGPU-UVH5
         - BACKEND=UVH5
         - PROJID=xGPU
         - UVH5TELP=/opt/mnt/share/telinfo_ata.toml
-        - UVH5OBSP=/opt/mnt/share/obsinfo.toml
-        - XGPUINT=8
+        - XGPUINT=4
+        - POLS=xy
       ibv_blade_b:
         - HPCONFIG=DEV_IBV-FTP-BLADE_B-RAW
         - PROJID=blade
@@ -147,8 +179,15 @@ dev:
         - TELINFOP=/opt/mnt/share/telinfo_ata.toml
         - OBSINFOP=/opt/mnt/share/obsinfo.toml
         - CALWGHTP=/opt/mnt/share/ant_weights_1+0j.bin
+      ibv_blade_h:
+        - HPCONFIG=DEV_IBV-FTP-BLADE_H-FIL
+        - PROJID=blade
+        - BACKEND=FIL
+        - TELINFOP=/opt/mnt/share/telinfo_ata.toml
+        - OBSINFOP=/opt/mnt/share/obsinfo.toml
+        - CALWGHTP=/opt/mnt/share/ant_weights_1+0j.bin
     - DIRECTIO=1
-    - IBVPKTSZ=42,16,8208
+    - IBVPKTSZ=42,16,8192
     # - IBVPKTSZ=42,16,4112
     - CUDADEV=$INSTANCE
     - BINDPORT=50000
@@ -158,19 +197,25 @@ dev:
   instance_bindhost: [enp97s0f1, enp225s0f1]
   thread_mask_lengths:
     hpguppi_ata_ibv_payload_order_thread:
-      12
+      10
   subsystem_threads:
     xgpu:
       - hpguppi_ibvpkt_thread
       - hpguppi_ata_ibv_payload_order_thread
       - hpguppi_ata_xgpu_thread
+      - hpguppi_ata_xintegration_thread
       - hpguppi_ata_obs_uvh5disk_thread
     ibv_blade_b:
       - hpguppi_ibvpkt_thread
       - hpguppi_ata_ibv_payload_order_thread
       - hpguppi_ata_blade_beamformer_thread
-      - hpguppi_ata_blade_obs_rawdisk_thread
+      - hpguppi_atasnap_obs_rawdisk_thread
     ibv_blade_a:
+      - hpguppi_ibvpkt_thread
+      - hpguppi_ata_ibv_payload_order_thread
+      - hpguppi_ata_blade_beamformer_thread
+      - hpguppi_ata_fildisk_thread
+    ibv_blade_h:
       - hpguppi_ibvpkt_thread
       - hpguppi_ata_ibv_payload_order_thread
       - hpguppi_ata_blade_beamformer_thread

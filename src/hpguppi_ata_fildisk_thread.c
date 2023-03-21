@@ -25,6 +25,7 @@
 #include "hpguppi_time.h"
 #include "hpguppi_atasnap.h"
 #include "filterbankc99/filterbank_utils.h"
+#include "filterbankc99/filterbank_write_utils.h"
 
 #include "ioprio.h"
 
@@ -48,7 +49,6 @@ void hpguppi_fil_read_header_from_status(
   int imjd;
   char tmp[80];
 
-  int blocsize = 0;
   int npol =     0;
   int obsnchan = 0;
   uint32_t nbits =    8;
@@ -64,7 +64,7 @@ void hpguppi_fil_read_header_from_status(
   double ra;  // hours
   double dec; // degrees
   double mjd;
-  hgeti4(statusbuf, "BLOCSIZE", &blocsize);
+
   hgeti4(statusbuf, "NPOL", &npol);
   hgeti4(statusbuf, "OBSNCHAN", &obsnchan);
   hgetu4(statusbuf, "NBITS", &nbits);
@@ -450,6 +450,7 @@ static void *run(hashpipe_thread_args_t * args)
             filbanks[i]->header->src_dej = filterbank_ddd_to_dms(filbanks[i]->header->src_dej);
           }
           write_header(*filbanks[i]);
+          fflush(filbanks[i]->file);
         }        
 
         hgetu4(datablock_header, "BLOCSIZE", &blocksize_perbeam);
@@ -470,11 +471,22 @@ static void *run(hashpipe_thread_args_t * args)
         /* Write data */
         datablock_header = hpguppi_databuf_data(indb, curblock_in);
         for(i = 0; i < filbank_header.nbeams; i++) {
-          rv = fwrite(
+          // rv = fwrite(
+          //   datablock_header + i*blocksize_perbeam,
+          //   1,
+          //   blocksize_perbeam,
+          //   filbanks[i]->file
+          // );
+
+          int fd = fileno(filbanks[i]->file);
+          // hashpipe_info(thread_name, "lseek file for beam %d: %lld", i, lseek(fd, 0, SEEK_END));
+          rv = filterbank_write_FTP(
+            fd,
             datablock_header + i*blocksize_perbeam,
-            1,
             blocksize_perbeam,
-            filbanks[i]->file
+            filbanks[i]->header->nchans,
+            filbanks[i]->header->nifs,
+            filbanks[i]->header->nbits
           );
           if(rv != blocksize_perbeam
           ) {
