@@ -38,6 +38,79 @@ def collect_yaml_value(yaml_value, instance, cpu_count, subsystem):
 	return collection
 
 
+def get_cpu_core_count():
+	# Gather cpu core count
+	cores_per_cpu = subprocess.run('grep cpu.cores /proc/cpuinfo'.split(' '), capture_output=True).stdout
+
+	cores_per_cpu = cores_per_cpu.decode().strip()
+	m = re.match(r'cpu cores\s*:\s*(\d+).*', cores_per_cpu)
+	return int(m.group(1))
+
+
+def get_extended_environment(environment_keys, keyword_variable_dict):
+	env = os.environ
+	for env_kv in environment_keys:
+		key, val = env_kv.split('=')
+
+		if '$'+key in val:
+			replacement = env[key] if key in env else ''
+			val = val.replace('$'+key, replacement)
+		for var,keyword_val in keyword_variable_dict.items():
+				val = val.replace('${}'.format(var), str(keyword_val))
+
+		env[key] = val
+	return env
+
+
+def delete(
+	system_name,
+	instance,
+	yaml_config,
+	environment_keys = [],
+	dry_run = False,
+	config_filename = '???'
+):
+
+	subsystem_split_index = system_name.find('_')
+
+	system_full_name = system_name
+	# Select configuration for the system
+	if subsystem_split_index > -1 and system_name not in yaml_config:
+		subsystem = system_name[subsystem_split_index+1:]
+		system_name = system_name[0:subsystem_split_index]
+		assert system_name in yaml_config , 'Root-system {} not defined in {}'.format(system_name, config_filename)
+		print('Accessing root-system \'{}\''.format(system_name))
+	else:
+		subsystem = ''
+		assert system_name in yaml_config , 'System {} not defined in {}'.format(system_name, config_filename)
+
+	system = yaml_config[system_name]
+	
+	prefix_exec = system.get('prefix_exec', default_prefix_exec)
+
+	# Gather cpu core count
+	try:
+		cores_per_cpu = get_cpu_core_count()
+	except:
+		print('Error trying to get the cpu core count.')
+		exit(0)
+	
+	system_environment_keys_start_index = len(environment_keys)
+	if 'hashpipe_keyfile' in system:
+		environment_keys.append('HASHPIPE_KEYFILE={}'.format(system['hashpipe_keyfile']))
+	if 'environment' in system:
+		environment_keys += collect_yaml_value(system['environment'], instance, cores_per_cpu, subsystem)
+	
+	cmd = [
+		f"{prefix_exec}hashpipe_clean_shmem",
+		"-I", str(instance),
+		"-d"
+	]
+
+	print(' '.join(cmd))
+	hashpipe_env = get_extended_environment(environment_keys, {})
+	print(subprocess.run(cmd, env=hashpipe_env, check=True, stdout=subprocess.PIPE).stdout.decode())
+
 def run(
 	system_name,
 	instance,
@@ -65,11 +138,8 @@ def run(
 	system = yaml_config[system_name]
 
 	# Gather cpu core count
-	cores_per_cpu = subprocess.run('grep cpu.cores /proc/cpuinfo'.split(' '), capture_output=True).stdout
 	try:
-		cores_per_cpu = cores_per_cpu.decode().strip()
-		m = re.match(r'cpu cores\s*:\s*(\d+).*', cores_per_cpu)
-		cores_per_cpu = int(m.group(1))
+		cores_per_cpu = get_cpu_core_count()
 	except:
 		print('Error trying to get the cpu core count.')
 		exit(0)
@@ -195,12 +265,12 @@ def run(
 				cpu_core += thread_mask_length_dict[thread]
 
 	# Gather instance-agnostic instantiation variables
-	prefix_exec = system['prefix_exec'] if 'prefix_exec' in system else default_prefix_exec
-	prefix_lib = system['prefix_lib'] if 'prefix_lib' in system else default_prefix_lib
+	prefix_exec = system.get('prefix_exec', default_prefix_exec)
+	prefix_lib = system.get('prefix_lib', default_prefix_lib)
 	logdir = system['logdir'] if 'logdir' in system else default_logdir
 	# Gather optional instance-agnostic instantiation variables
-	command_prefix = system['command_prefix'] if 'command_prefix' in system else ''
-	hpguppi_plugin = system['hpguppi_plugin'] if 'hpguppi_plugin' in system else 'hpguppi_daq.so'
+	command_prefix = system.get('command_prefix', '')
+	hpguppi_plugin = system.get('hpguppi_plugin', 'hpguppi_daq.so')
 
 	# Gather required instance-sensitive instantiation variables
 	assert 'instance_datadir' in system, '{} for system {} ({} core) in {}'.format('instance_datadir', system_name, cpu_core_count, config_filename)
@@ -292,10 +362,10 @@ def run(
 			if os.path.exists(logpath):
 				print('Trimming log: {}'.format(logpath))
 
-				with open('tmp.out', 'w') as tmpio:
+				with open('/tmp/tmp.out', 'w') as tmpio:
 					subprocess.run('tail -n 100000 {}'.format(logpath).split(' '), stdout=tmpio)
 				
-				subprocess.run('mv tmp.out {}'.format(logpath).split(' '))
+				subprocess.run('mv /tmp/tmp.out {}'.format(logpath).split(' '))
 				with open(logpath, 'a') as logio:
 					logio.write('\n{}\nStartup {}\n{}\n{}\n'.format('-'*20, datetime.datetime.now(), ' '.join(cmd), 'v'*20))
 		print()
@@ -311,17 +381,7 @@ def run(
 	if 'environment' in system:
 		environment_keys += collect_yaml_value(system['environment'], instance, cores_per_cpu, subsystem)
 
-	hashpipe_env = os.environ
-	for env_kv in environment_keys:
-		key, val = env_kv.split('=')
-
-		if '$'+key in val:
-			replacement = hashpipe_env[key] if key in hashpipe_env else ''
-			val = val.replace('$'+key, replacement)
-		for var,keyword_val in _keyword_variable_dict.items():
-				val = val.replace('${}'.format(var), str(keyword_val))
-
-		hashpipe_env[key] = val
+	hashpipe_env = get_extended_environment(environment_keys, _keyword_variable_dict)
 
 	if 'setup_commands' in system:
 		for setup_command in collect_yaml_value(system['setup_commands'], instance, cores_per_cpu, subsystem):
@@ -385,6 +445,8 @@ if __name__ == '__main__':
 											help='Additional key=val pairs for the environment of the Hpguppi instance')
 	parser.add_argument('-d', '--dry-run', action='store_true',
 											help='Do not start the instance')
+	parser.add_argument('-D', '--delete', action='store_true',
+											help='Delete the shared memory of the instance')
 	parser.add_argument('--configfile', type=str, default='config_hpguppi.yml',
 											help='The file containing systems\' configurations.')
 	args = parser.parse_args()
@@ -394,15 +456,25 @@ if __name__ == '__main__':
 	with open(args.configfile, 'r') as fio:
 		yaml_config = yaml.load(fio, Loader=yaml.SafeLoader)
 		for inst_str in args.instance.split(','):
-			run(
-				args.system,
-				int(inst_str),
-				yaml_config,
-				additional_arguments = args.additional_arguments,
-				options = args.options,
-				environment_keys = args.environment_keys,
-				dry_run = args.dry_run,
-				config_filename = args.configfile
-			)
+			if args.delete:
+				delete(
+					args.system,
+					int(inst_str),
+					yaml_config,
+					environment_keys = args.environment_keys,
+					dry_run = args.dry_run,
+					config_filename = args.configfile
+				)
+			else:
+				run(
+					args.system,
+					int(inst_str),
+					yaml_config,
+					additional_arguments = args.additional_arguments,
+					options = args.options,
+					environment_keys = args.environment_keys,
+					dry_run = args.dry_run,
+					config_filename = args.configfile
+				)
 
 	exit(0)
