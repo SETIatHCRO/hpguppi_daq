@@ -217,7 +217,7 @@ static void *run(hashpipe_thread_args_t * args)
           if(state == RECORD){//and recording, finalise block
             // If file open, close it
             if(fdraws[0] != -1) {
-              for(i = 0; i < nbeams; i++){
+              for(i = 0; i < nfdraws; i++){
                 // Close file
                 close(fdraws[i]);
                 // Reset fdraw, got_packet_0, filenum, block_count
