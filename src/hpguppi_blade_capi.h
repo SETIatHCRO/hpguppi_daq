@@ -3,7 +3,7 @@
 
 typedef bool (blade_stateful_cb)(void*);
 typedef bool (blade_input_buffer_fetch_cb)(void*, void**, size_t*);
-typedef void (blade_input_buffer_enqueued_cb)(void*, size_t);
+typedef void (blade_input_buffer_enqueued_cb)(void*, size_t, size_t);
 typedef void (blade_input_buffer_ready_cb)(void*, const void*, size_t);
 typedef bool (blade_output_buffer_fetch_cb)(void*, void**, size_t*);
 typedef void (blade_output_buffer_ready_cb)(void*, const void*, size_t);

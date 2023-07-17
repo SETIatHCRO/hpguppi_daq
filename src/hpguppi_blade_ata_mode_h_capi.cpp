@@ -307,7 +307,7 @@ bool blade_ata_h_compute_step() {
             Plan::Accumulate(ModeH, ModeB, worker.getOutputBuffer());
 
             // Asynchronous CPU work
-            State.Callbacks.InputBufferEnqueued(State.UserData, bufferId); // not optimal, move to spin-loop
+            State.Callbacks.InputBufferEnqueued(State.UserData, bufferId, ~0); // not optimal, move to spin-loop
 
             // Return job identity and increment counter.
             return State.StepCount++; 
@@ -328,15 +328,15 @@ bool blade_ata_h_compute_step() {
         // Compute input data.
         Plan::Compute(worker);
         
-        size_t bufferId;
+        size_t outputBufferId;
         // Calls client callback to request empty output buffer.
-        if (!State.Callbacks.OutputBufferFetch(State.UserData, &externalBuffer, &bufferId)) {
+        if (!State.Callbacks.OutputBufferFetch(State.UserData, &externalBuffer, &outputBufferId)) {
             Plan::Skip();
         }
 
         // Keeps track of pointer for "ready" callback.
         State.OutputPointerMap.insert({callbackStep, externalBuffer});
-        State.OutputIdMap.insert({callbackStep, bufferId});
+        State.OutputIdMap.insert({callbackStep, outputBufferId});
 
         // Create Memory::ArrayTensor from RAW pointer.
         auto output = ArrayTensor<Device::CPU, F32>(externalBuffer, worker.getOutputBuffer().dims());

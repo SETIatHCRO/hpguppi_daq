@@ -281,7 +281,7 @@ bool blade_ata_a_compute_step() {
                             input);
 
             // Asynchronous CPU work
-            State.Callbacks.InputBufferEnqueued(State.UserData, bufferId_input); // not optimal, move to spin-loop
+            State.Callbacks.InputBufferEnqueued(State.UserData, bufferId_input, bufferId_output); // not optimal, move to spin-loop
 
             // Compute input data.
             Plan::Compute(worker);

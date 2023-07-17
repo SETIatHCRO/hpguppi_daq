@@ -32,6 +32,7 @@ typedef struct {
     int32_t prev_flagged_NTIME;
     int32_t prev_flagged_NPOLS;
     int64_t prev_pktidx_obs_start;
+    uint64_t prev_filled_pktidx;
 
     size_t accumulator_counter;
 
@@ -215,9 +216,12 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
   }
 
   {// re-setup if a new observation
-    int64_t pktidx_obs_start, pktidx_blk_start;
+    int64_t pktidx_obs_start, pktidx_blk_start, pktidx, pktidx_blk_stop;
+    hgeti8(databuf_header, "PKTIDX", &pktidx);
     hgeti8(databuf_header, "PKTSTART", &pktidx_obs_start);
     hgeti8(databuf_header, "BLKSTART", &pktidx_blk_start);
+    hgeti8(databuf_header, "BLKSTOP", &pktidx_blk_stop);
+    user_data->prev_filled_pktidx = ~0;
 
     // if first block of observation
     if (pktidx_obs_start != user_data->prev_pktidx_obs_start && pktidx_obs_start >= pktidx_blk_start) {
@@ -375,30 +379,33 @@ bool blade_cb_input_buffer_fetch(void* user_data_void, void** buffer, size_t* bu
   return true;
 }
 
-void blade_cb_input_buffer_enqueued(void* user_data_void, size_t buffer_id) {
+void blade_cb_input_buffer_enqueued(void* user_data_void, size_t buffer_input_id, size_t buffer_ouput_id) {
   blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
+  if (buffer_ouput_id == ~0) {
+    buffer_ouput_id = user_data->out_index_free;
+  }
 
   double tbin;
   double obsbw;
 
   {// Asynchronous CPU work
     // copy across the header
-    char* databuf_header = hpguppi_databuf_header(user_data->out, user_data->out_index_free);
+    char* databuf_header = hpguppi_databuf_header(user_data->out, buffer_ouput_id);
 
     #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
-      size_t block_stop_pktidx;
+      uint64_t block_stop_pktidx;
       if (user_data->accumulator_counter == 0) {
         memcpy(databuf_header,
-              hpguppi_databuf_header(user_data->in, buffer_id),
+              hpguppi_databuf_header(user_data->in, buffer_input_id),
               BLOCK_HDR_SIZE);
       }
       else {
-        hgetu8(hpguppi_databuf_header(user_data->in, buffer_id), "BLKSTOP", &block_stop_pktidx);
+        hgetu8(hpguppi_databuf_header(user_data->in, buffer_input_id), "BLKSTOP", &block_stop_pktidx);
         hputu8(databuf_header, "BLKSTOP", block_stop_pktidx);
       }
     #else
       memcpy(databuf_header,
-            hpguppi_databuf_header(user_data->in, buffer_id),
+            hpguppi_databuf_header(user_data->in, buffer_input_id),
             BLOCK_HDR_SIZE);
     #endif
 
@@ -475,6 +482,7 @@ bool blade_cb_output_buffer_fetch(void* user_data_void, void** buffer, size_t* b
         hashpipe_status_unlock_safe(user_data->status);
         user_data->status_state = 2;
       }
+      hashpipe_warn(user_data->thread_name, "timed out waiting for output buffer #%d", user_data->out_index_free);
       return false;
     }
     if(hpguppi_databuf_wait_rv != HASHPIPE_OK) {
@@ -545,6 +553,28 @@ void blade_cb_output_buffer_ready(void* user_data_void, const void* buffer, size
     pthread_exit(NULL);
     return;
   }
+  
+  char* databuf_header = hpguppi_databuf_header(user_data->out, buffer_id);
+  uint64_t pktidx, piperblk, block_start_pktidx, block_stop_pktidx;
+  hgetu8(databuf_header, "PKTIDX", &pktidx);
+  hgetu8(databuf_header, "PIPERBLK", &piperblk);
+  hgetu8(databuf_header, "BLKSTART", &block_start_pktidx);
+  hgetu8(databuf_header, "BLKSTOP", &block_stop_pktidx);
+  // hashpipe_info(user_data->thread_name, "?: Pushing (#%d) PKTIDX=%ld, BLKSTART=%ld, BLKSTOP=%ld.", buffer_id, pktidx, block_start_pktidx, block_stop_pktidx);
+  int64_t pktidx_delta = pktidx - user_data->prev_filled_pktidx;
+  if (user_data->prev_filled_pktidx != ~0 && pktidx_delta != piperblk) {
+    hashpipe_warn(
+      user_data->thread_name,
+      "Finalising block with PKTIDX that breaks sequence: %lu -> %lu (delta %ld != PIPERBLK==%lu (ratio %f))",
+      user_data->prev_filled_pktidx,
+      pktidx,
+      pktidx_delta,
+      piperblk,
+      (double)pktidx_delta/piperblk
+    );
+  }
+  user_data->prev_filled_pktidx = pktidx;
+
   hpguppi_databuf_set_filled(user_data->out, buffer_id);
   user_data->out_index_fill = (user_data->out_index_fill + 1) % user_data->out->header.n_block;
 
@@ -598,6 +628,7 @@ static void *run(hashpipe_thread_args_t *args)
     .prev_flagged_NCHAN = 0,
     .prev_flagged_NTIME = 0,
     .prev_flagged_NPOLS = 0,
+    .prev_filled_pktidx = ~0,
 
     .accumulator_counter = 0,
 
