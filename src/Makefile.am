@@ -26,8 +26,7 @@ hpguppi_support = hpguppi_atasnap.h \
 		  hpguppi_util.h   \
 		  hpguppi_util.c   \
 		  polyco_struct.h  \
-		  psrfits.h \
-		  mysigproc/mysigproc_utils.h
+		  psrfits.h
 
 # hpguppi_support += \
 #		  hpguppi_udp.h    \
@@ -37,8 +36,7 @@ libsla_support = slalib.h sla.c f77.h
 
 hpguppi_threads = \
 		hpguppi_ata_ibv_payload_order_thread.c \
-		hpguppi_atasnap_obs_rawdisk_thread.c \
-		mysigproc/mysigproc_utils.c
+		hpguppi_atasnap_obs_rawdisk_thread.c
 #		guppiraw_ibv_packetize_thread.c # depends on rawspec currently
 
 if IBVERBS_ENABLED
@@ -106,10 +104,10 @@ hpguppi_daq_la_LDFLAGS += -L"@BLADE_LIBDIR@" -Wl,-rpath,"@BLADE_LIBDIR@"
 hpguppi_daq_la_CFLAGS  += -I "@BLADE_INCDIR@"
 endif
 
-if FILTERBANKH5C99_ENABLED
-hpguppi_daq_la_LDFLAGS += -L"@FILTERBANKH5C99_LIBDIR@" -Wl,-rpath,"@FILTERBANKH5C99_LIBDIR@"
-hpguppi_daq_la_LIBADD  += -lfilterbankh5c99 -lfilterbankc99
-hpguppi_daq_la_CFLAGS  += -I "@FILTERBANKH5C99_INCDIR@"
+if FILTERBANKC99_ENABLED
+hpguppi_daq_la_LDFLAGS += -L"@FILTERBANKC99_LIBDIR@" -Wl,-rpath,"@FILTERBANKC99_LIBDIR@"
+hpguppi_daq_la_LIBADD  += -lfilterbankc99 -lh5dsc99
+hpguppi_daq_la_CFLAGS  += -I "@FILTERBANKC99_INCDIR@"
 
 if BLADE_ENABLED
 hpguppi_threads += \

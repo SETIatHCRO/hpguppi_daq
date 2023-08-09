@@ -26,10 +26,9 @@
 #include "hpguppi_atasnap.h"
 #include "filterbankc99/filterbank_utils.h"
 #include "filterbankc99/filterbank_write_utils.h"
+#include "filterbankc99/filterbank_h5.h"
 
 #include "ioprio.h"
-
-#include "mysigproc/mysigproc_utils.h"
 
 // 80 character string for the BACKEND header record.
 static const char BACKEND_RECORD[] =
@@ -38,43 +37,64 @@ static const char BACKEND_RECORD[] =
   "BACKEND = 'FILTERBANK'                  " \
   "                                        ";
 
+// FILTERBANK_SIGPROC or FILTERBANK_FBH5
+#define FILTERBANK_FBH5 0
+#define FILTERBANK_SIGPROC 1
+
+#define FILTERBANK_FORMAT FILTERBANK_FBH5
+
+#if FILTERBANK_FORMAT == FILTERBANK_FBH5
+#define FILTERBANK_FILE_T filterbank_h5_file_t
+#define FILTERBANK_OPEN filterbank_h5_open
+#define FILTERBANK_ALLOC filterbank_h5_alloc
+#define FILTERBANK_CLEAR_ALLOC filterbank_h5_clear_alloc
+#define FILTERBANK_WRITE filterbank_h5_write
+#define FILTERBANK_WRITE_FTP filterbank_h5_write_FTP
+#define FILTERBANK_CLOSE filterbank_h5_close
+#define FILTERBANK_FREE filterbank_h5_free
+#elif FILTERBANK_FORMAT == FILTERBANK_SIGPROC
+#define FILTERBANK_FILE_T filterbank_file_t
+#define FILTERBANK_OPEN filterbank_open
+#define FILTERBANK_ALLOC filterbank_alloc
+#define FILTERBANK_CLEAR_ALLOC filterbank_clear_alloc
+#define FILTERBANK_WRITE filterbank_write
+#define FILTERBANK_WRITE_FTP filterbank_write_FTP_reversed
+#define FILTERBANK_CLOSE filterbank_close
+#define FILTERBANK_FREE filterbank_free
+#endif
+
 void hpguppi_fil_read_header_from_status(
   char* statusbuf,
-  sigproc_header_t* filheader
+  filterbank_header_t* filheader
 ){
-  char src_name[81];
   char telescop[81];
 
   int smjd;
   int imjd;
   char tmp[80];
 
-  int npol =     0;
   int obsnchan = 0;
-  uint32_t nbits =    8;
   double obsfreq =  0.0;
   double obsbw =    0.0;
   double tbin =     0.0;
   int directio = 0;
   uint64_t pktidx =  -1;
   int beam_id = -1;
-  int nbeams =   -1;
   uint32_t nants =    1;
   
-  double ra;  // hours
-  double dec; // degrees
   double mjd;
 
-  hgeti4(statusbuf, "NPOL", &npol);
+  // TODO add NFPCCHAN
+  hgeti4(statusbuf, "NPOL", &filheader->nifs); // Number of IF (stokes I => IF = 1) (AKA NPOL)
   hgeti4(statusbuf, "OBSNCHAN", &obsnchan);
-  hgetu4(statusbuf, "NBITS", &nbits);
+  hgeti4(statusbuf, "NBITS", &filheader->nbits);
   hgetr8(statusbuf, "OBSFREQ", &obsfreq);
   hgetr8(statusbuf, "OBSBW", &obsbw);
   hgetr8(statusbuf, "TBIN", &tbin);
   hgeti4(statusbuf, "DIRECTIO", &directio);
   hgetu8(statusbuf, "PKTIDX", &pktidx);
   hgeti4(statusbuf, "BEAM_ID", &beam_id);
-  hgeti4(statusbuf, "NBEAM", &nbeams);
+  hgeti4(statusbuf, "NBEAM", &filheader->nbeams);
   hgetu4(statusbuf, "NANTS", &nants);
 
   strncpy(tmp, "INTEGER", 80);
@@ -82,50 +102,47 @@ void hpguppi_fil_read_header_from_status(
 
   strncpy(tmp, "0.0", 80);
   hgets(statusbuf, "RA_STR", 72, tmp);
-  ra = filterbank_dmsstr_to_ddd(tmp);
+  filheader->src_raj = filterbank_dmsstr_to_ddd(tmp); // hours
 
   strncpy(tmp, "0.0", 80);
   hgets(statusbuf, "DEC_STR", 72, tmp);
-  dec = filterbank_dmsstr_to_ddd(tmp);
+  filheader->src_dej = filterbank_dmsstr_to_ddd(tmp); // degrees
 
   hgeti4(statusbuf, "STT_IMJD", &imjd); // TODO use double?
   hgeti4(statusbuf, "STT_SMJD", &smjd);     // TODO use double?
   mjd = ((double)imjd) + ((double)smjd)/86400.0;
 
-  strncpy(src_name, "Unknown", 80);
-  hgets(statusbuf, "SRC_NAME", 72, src_name);
+  strncpy(filheader->source_name, "Unknown", 80);
+  hgets(statusbuf, "SRC_NAME", 72, filheader->source_name);
   strncpy(telescop, "Unknown", 80);
   hgets(statusbuf, "TELESCOP", 72, telescop);
 
-  snprintf(filheader->source_name, sizeof(filheader->source_name), "%s", src_name);
+  // strncpy(filheader->rawdatafile, "Not Applicable", 80);
 
   filheader->machine_id = 0;                      // Machine ID
   hgetr8(statusbuf, "AZ", &filheader->az_start);  // azimuth
   hgetr8(statusbuf, "EL", &filheader->za_start);  // zenith angle
   filheader->za_start = 90.0 - filheader->za_start;
-  filheader->nifs = npol;                // Number of IF (stokes I => IF = 1) (AKA NPOL)
 
   filheader->telescope_id = filterbank_telescope_id(telescop); // Telescope ID
   filheader->tstart = mjd;    // MJD
-  int ra_hh = (int)ra;
-  double ra_mm = (ra - ra_hh) * 60;
-  double ra_ss = (ra_mm - ((int)ra_mm)) * 60;
-  int dec_hh = (int)dec;
-  double dec_mm = (dec - dec_hh) * 60;
-  double dec_ss = (dec_mm - ((int)dec_mm)) * 60;
 
-  // sigproc format is the hh:mm:ss.ms format, without the colons
-  filheader->src_raj = (ra_hh * 100.0 + ((int) ra_mm)) * 100.00 + ra_ss;
-  filheader->src_dej = (dec_hh * 100.0 + ((int) dec_mm)) * 100.00 + dec_ss;
-  filheader->nbits = nbits;   // Bit size
-  filheader->nbeams = nbeams; // Nbeams
-  filheader->ibeam = beam_id; // Beam number
+  filheader->ibeam = -1; // Beam number
+  filheader->data_type = 0;
+  filheader->pulsarcentric = 0;
+  filheader->barycentric = 0;
 
   int nsources = nants;
   if(filheader->nbeams != 0) {
     hashpipe_info(__FUNCTION__, "NBEAMS %d > 0 overriding NANTS %d value.", filheader->nbeams, nants);
     nsources = filheader->nbeams;
   }
+
+  #if FILTERBANK_FORMAT == FILTERBANK_FBH5
+  #elif FILTERBANK_FORMAT == FILTERBANK_SIGPROC
+    hashpipe_info(__FUNCTION__, "Negating OBSBW for SIGPROC format.");
+    obsbw *= -1.0; // indicate descending frequency order.
+  #endif
 
   // Emulate https://github.com/UCBerkeleySETI/rawspec/blob/162752186c8406c3ead985c3fd48f4035371cd0f/rawspec.c#L805-L830
   {
@@ -194,10 +211,12 @@ static void *run(hashpipe_thread_args_t * args)
   int curblock_in=0;
 
   char *datablock_header;
-  uint32_t blocksize_perbeam=0, timesamples_perblock;
+  size_t bytesize_perbeam=0, bytesize_perspectrum=0;
+  int n_spectra;
   int got_packet_0=0;
-  fil_t** filbanks = NULL;
-  sigproc_header_t filbank_header;
+  FILTERBANK_FILE_T* filbanks = NULL;
+  filterbank_header_t filbank_header = {0};
+  double src_raj, src_dej;
   int incoherent_beam_enabled;
 
   unsigned char base_filename_stem_start;
@@ -321,11 +340,10 @@ static void *run(hashpipe_thread_args_t * args)
               for(i = 0; i < filbank_header.nbeams; i++){
                 // Now destroy the fil struct
                 // de-allocates memory and closes file
-                if (destroy_fil(filbanks[i])) {
-                  fprintf(stderr, "Error in destroy_fil#%d\n", i);
-                  pthread_exit(NULL);
-                }
-                filbanks[i] = NULL;
+                FILTERBANK_CLOSE(filbanks+i);
+                filbanks[i].data = NULL; // reset the manually controlled pointer, so it doesn't get freed
+                FILTERBANK_FREE(filbanks+i); // just free the mask (in H5 case)
+                
               }
               // Reset filbank, got_packet_0
               free(filbanks);
@@ -393,7 +411,9 @@ static void *run(hashpipe_thread_args_t * args)
         got_packet_0 = 1;
         // got_packet_0 only = 0 when filbanks is NULL, so don't bother clearing it
         hpguppi_fil_read_header_from_status(datablock_header, &filbank_header);
-        filbanks = (fil_t**) malloc(filbank_header.nbeams*sizeof(fil_t*));
+
+        filbanks = (FILTERBANK_FILE_T*) malloc(filbank_header.nbeams*sizeof(FILTERBANK_FILE_T));
+        memset(filbanks, 0, filbank_header.nbeams*sizeof(FILTERBANK_FILE_T));
 
         // populate pf.basefilename //TODO this method is overkill for that purpose
         hpguppi_read_obs_params(datablock_header, &gp, &pf);
@@ -422,40 +442,66 @@ static void *run(hashpipe_thread_args_t * args)
         incoherent_beam_enabled = 0;
         hgeti4(datablock_header, "INCOBEAM", &incoherent_beam_enabled);
 
+        hgetu8(datablock_header, "BLOCSIZE", &bytesize_perbeam);
+        bytesize_perbeam = bytesize_perbeam/filbank_header.nbeams;
+        bytesize_perspectrum = filbank_header.nifs*filbank_header.nchans*filbank_header.nbits/8;
+        n_spectra = bytesize_perbeam/bytesize_perspectrum;
+        // TODO assert bytesize_perbeam % bytesize_perspectrum == 0;
+        hashpipe_info(thread_name, "Writing %lu bytes per %lu spectra per %lu beams.", bytesize_perspectrum, n_spectra, filbank_header.nbeams);
+
+        src_raj = filbank_header.src_raj;
+        src_dej = filbank_header.src_dej;
         // Open filterbank files for each beam
         for(i = 0; i < filbank_header.nbeams; i++) {
-          sprintf(fname, "%s-beam%04d.fil", pf.basefilename, i);
+          sprintf(
+            fname,
+            "%s-beam%04d.%s",
+            pf.basefilename,
+            i,
+            #if FILTERBANK_FORMAT == FILTERBANK_FBH5
+            "fbh5"
+            #else
+            "fil"
+            #endif
+          );
           hashpipe_info(thread_name, "Opening filterbank file '%s'", fname);
-          filbanks[i] = create_fil(fname, &rv, SIGPROC_CREATE_FIL_WRITE);
-          if(filbanks[i]->file == NULL){
-            hashpipe_error(thread_name, "Failed to open file: %s", fname);
-          }
-          memcpy(filbanks[i]->header, &filbank_header, sizeof(sigproc_header_t));
-          filbanks[i]->header->ibeam = i;
+          
+          filbank_header.ibeam = i;
           if(incoherent_beam_enabled && i == filbank_header.nbeams-1) {
-            filbanks[i]->header->ibeam *= -1;
+            filbank_header.ibeam *= -1;
+            filbank_header.src_raj = src_raj;
+            filbank_header.src_dej = src_dej;
           }
           else {
             // not incoherent beam, set appropriate coordinates
             strncpy(statuskey_value, "0.0", 80);
             sprintf(statuskey_key, "RA_OFF%d", i%10);
             hgets(datablock_header, statuskey_key, 72, statuskey_value);
-            filbanks[i]->header->src_raj = filterbank_dmsstr_to_ddd(statuskey_value);
-            filbanks[i]->header->src_raj = filterbank_ddd_to_dms(filbanks[i]->header->src_raj);
+            filbank_header.src_raj = filterbank_dmsstr_to_ddd(statuskey_value);
 
             strncpy(statuskey_value, "0.0", 80);
             sprintf(statuskey_key, "DEC_OFF%d", i%10);
             hgets(datablock_header, statuskey_key, 72, statuskey_value);
-            filbanks[i]->header->src_dej = filterbank_dmsstr_to_ddd(statuskey_value);
-            filbanks[i]->header->src_dej = filterbank_ddd_to_dms(filbanks[i]->header->src_dej);
+            filbank_header.src_dej = filterbank_dmsstr_to_ddd(statuskey_value);
           }
-          write_header(*filbanks[i]);
-          fflush(filbanks[i]->file);
-        }        
 
-        hgetu4(datablock_header, "BLOCSIZE", &blocksize_perbeam);
-        hgetu4(datablock_header, "PIPERBLK", &timesamples_perblock);
-        blocksize_perbeam = blocksize_perbeam/filbank_header.nbeams;
+          memcpy(&filbanks[i].header, &filbank_header, sizeof(filterbank_header_t));
+          filbanks[i].ntimes_per_write = n_spectra;
+          FILTERBANK_OPEN(
+            fname,
+            filbanks+i
+          );
+
+          // if (filbanks[i].file_id == 0) {
+          //     perror(thread_name);
+          //     hashpipe_error(thread_name, "Failed to open file: %s", fname);
+          //     pthread_exit(NULL);
+          // }
+          // alloc and clear both data and mask pointers.
+          FILTERBANK_ALLOC(filbanks+i);
+          FILTERBANK_CLEAR_ALLOC(filbanks+i);
+          free(filbanks[i].data); // will reference databuffers as needed
+        }
       }
 
       /* If we got packet 0, write data to disk */
@@ -471,32 +517,24 @@ static void *run(hashpipe_thread_args_t * args)
         /* Write data */
         datablock_header = hpguppi_databuf_data(indb, curblock_in);
         for(i = 0; i < filbank_header.nbeams; i++) {
-          // rv = fwrite(
-          //   datablock_header + i*blocksize_perbeam,
-          //   1,
-          //   blocksize_perbeam,
-          //   filbanks[i]->file
-          // );
-
-          int fd = fileno(filbanks[i]->file);
-          // hashpipe_info(thread_name, "lseek file for beam %d: %lld", i, lseek(fd, 0, SEEK_END));
-          rv = filterbank_write_FTP(
-            fd,
-            datablock_header + i*blocksize_perbeam,
-            blocksize_perbeam,
-            filbanks[i]->header->nchans,
-            filbanks[i]->header->nifs,
-            filbanks[i]->header->nbits
-          );
-          if(rv != blocksize_perbeam
-          ) {
+          // no transposition expected, assuming TPF data, and 1 spectrum per dump
+          filbanks[i].data = datablock_header
+            + i*bytesize_perbeam;
+          
+          if (filbanks[i].ntimes_per_write*filbanks[i].header.nifs == 1) {
+            rv = FILTERBANK_WRITE(filbanks+i);
+          }
+          else {
+            rv = FILTERBANK_WRITE_FTP(filbanks+i);
+          }
+          if(rv != 0) {
               perror(thread_name);
               hashpipe_error(
                 thread_name,
                 "Error writing data (block#=%d, beam#=%d, len=%d, rv=%d)",
                 curblock_in,
                 i,
-                blocksize_perbeam,
+                bytesize_perbeam,
                 rv
               );
               pthread_exit(NULL);

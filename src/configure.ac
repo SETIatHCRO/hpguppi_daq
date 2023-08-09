@@ -61,7 +61,7 @@ AX_CHECK_UVH5C99
 AX_CHECK_RADIOINTERFEROMETRY99
 
 # Check for filterbankh5
-AX_CHECK_FILTERBANKH5C99
+AX_CHECK_FILTERBANKC99
 
 # Checks for libraries.
 #AC_CHECK_LIB([pthread], [pthread_create])
