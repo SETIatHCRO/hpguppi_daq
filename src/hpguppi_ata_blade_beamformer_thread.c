@@ -428,9 +428,6 @@ void blade_cb_input_buffer_enqueued(void* user_data_void, size_t buffer_input_id
     tbin *= BLADE_ATA_CONFIG.channelizerRate;
     tbin *= BLADE_ATA_CONFIG.integrationSize;
 
-    // negate OBSBW to indicate descending frequency-channel order
-    obsbw *= -1.0;
-
     #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
     if (user_data->accumulator_counter == 0) {
       // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
@@ -441,9 +438,6 @@ void blade_cb_input_buffer_enqueued(void* user_data_void, size_t buffer_input_id
       tbin *= BLADE_ATA_CONFIG.channelizerRate;
       tbin *= BLADE_ATA_CONFIG.integrationSize;
       tbin *= BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
-
-      // negate OBSBW to indicate descending frequency-channel order
-      obsbw *= -1.0;
     }
 
     #else
@@ -507,45 +501,6 @@ bool blade_cb_output_buffer_fetch(void* user_data_void, void** buffer, size_t* b
 
 void blade_cb_output_buffer_ready(void* user_data_void, const void* buffer, size_t buffer_id) {
   blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
-
-  #if 0 //BLADE_ATA_MODE == BLADE_ATA_MODE_A || BLADE_ATA_MODE == BLADE_ATA_MODE_H
-  // Mode A/H has filterbank outputs, so transpose the binary data to suit that of .fil files
-  const int npol = BLADE_ATA_CONFIG.numberOfOutputPolarizations;
-  const int nbeams = BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0);
-
-  #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
-  float* ftp_output = user_data->out_intermediary[buffer_id];
-  float* tpf_output = (float*) hpguppi_databuf_data(user_data->out, buffer_id);
-  const int nfreq = BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate;
-  const int ntime = BLADE_ATA_CONFIG.inputDims.NTIME / (BLADE_ATA_CONFIG.integrationSize * BLADE_ATA_CONFIG.channelizerRate);
-  #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
-  float* ftp_output = user_data->out_intermediary[buffer_id];
-  float* tpf_output = (float*) hpguppi_databuf_data(user_data->out, buffer_id);
-  const int nfreq = BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
-  const int ntime = 1;
-  #endif
-  int b,f,t,p;
-
-  for(b = 0; b < nbeams; b++) {
-    for(f = 0; f < nfreq; f++) {
-      for(t = 0; t < ntime; t++) {
-        for(p = 0; p < npol; p++) {
-          tpf_output[
-              ((  b *ntime
-                + t)*npol
-                + p)*nfreq
-                - f + nfreq-1 // filterbank files typically are frequency descending
-          ] = ftp_output[
-              ((  b *nfreq
-                + f)*ntime
-                + t)*npol
-                + p
-          ];
-        }
-      }
-    }
-  }
-  #endif
 
   // hashpipe_info(user_data->thread_name, "filled output block #%d.", buffer_id);
   if(user_data->out_index_fill != buffer_id) {
