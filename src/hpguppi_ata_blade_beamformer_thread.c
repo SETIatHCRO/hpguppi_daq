@@ -227,7 +227,15 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
     if (pktidx_obs_start != user_data->prev_pktidx_obs_start && pktidx_obs_start >= pktidx_blk_start) {
       UVH5_header_t uvh5_header = {0};
       char tel_info_toml_filepath[70] = {'\0'};
-      char obs_info_toml_filepath[70] = {'\0'};
+      // char obs_info_toml_filepath[70] = {'\0'};
+      char reference_antenna_name[70] = {'\0'};
+      char antenna_names_csv[72] = {'\0'};
+      char polarizations_list[3] = {'\0'};
+      char antnames_key[9] = {'\0'};
+      char* token;
+      int npols;
+      UVH5_inputpair_t* inputpairs;
+      int inputpairs_index;
       double obs_antenna_positions[BLADE_ATA_INPUT_NANT*3] = {0}, obs_beam_coordinates[BLADE_ATA_OUTPUT_NBEAM*2] = {0};
       double obs_phase_center[2] = {0};
       struct blade_ata_observation_meta observationMetaData = {0};
@@ -258,22 +266,78 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
       hashpipe_status_lock_safe(user_data->status);
       {
         hgets(user_data->status->buf, "TELINFOP", 70, tel_info_toml_filepath);
-        hgets(user_data->status->buf, "OBSINFOP", 70, obs_info_toml_filepath);
+        hgets(user_data->status->buf, "REFANTNM", 70, reference_antenna_name);
+        // hgets(user_data->status->buf, "OBSINFOP", 70, obs_info_toml_filepath);
         hgets(user_data->status->buf, "CALWGHTP", 70, obs_antenna_calibration_filepath);
       }
       hashpipe_status_unlock_safe(user_data->status);
 
+      uvh5_header.Nspws = 1;
+      uvh5_header.Ntimes = 0; // initially
+      uvh5_header.Nblts = 0; // uvh5_header.Nbls * uvh5_header.Ntimes;
+      hgeti4(databuf_header, "NANTS", &uvh5_header.Nants_data);
+      hgeti4(databuf_header, "NPOL", &npols);
+      uvh5_header.Npols = npols*npols; // uvh5_header.Npols is the pol-products
+      uvh5_header.Nbls = (uvh5_header.Nants_data*(uvh5_header.Nants_data+1))/2;
+      UVH5Halloc(&uvh5_header);
+
+      hgets(databuf_header, "POLS", 3, polarizations_list);
+      hashpipe_info(user_data->thread_name, "polarizations_list (%d): %s", npols, polarizations_list);
+      // populate pol-product array
+      char pol_product[3] = {'\0'};
+      for (size_t i = 0; i < npols; i++) {
+        pol_product[0] = polarizations_list[i];
+        for (size_t j = 0; j < npols; j++) {
+          pol_product[1] = polarizations_list[j];
+          uvh5_header.polarization_array[i*2+j] = UVH5polarisation_string_key(pol_product, npols);
+          hashpipe_info(user_data->thread_name, "pol_product: %s:%d", pol_product, uvh5_header.polarization_array[i*2+j]);
+        }
+      }
       hashpipe_info(user_data->thread_name, "Parsing '%s' as Telescope information.", tel_info_toml_filepath);
       UVH5toml_parse_telescope_info(tel_info_toml_filepath, &uvh5_header);
-      hashpipe_info(user_data->thread_name, "Parsing '%s' as Observation information.", obs_info_toml_filepath);
-      UVH5toml_parse_observation_info(obs_info_toml_filepath, &uvh5_header);
+      // hashpipe_info(user_data->thread_name, "Parsing '%s' as Observation information.", obs_info_toml_filepath);
+      // UVH5toml_parse_observation_info(obs_info_toml_filepath, &uvh5_header);
+      
+      inputpairs = malloc(uvh5_header.Nants_data*npols*sizeof(UVH5_inputpair_t));
+      inputpairs_index = 0;
+      for(int antnames_index = 0; inputpairs_index < uvh5_header.Nants_data*npols; antnames_index++) {
+        snprintf(antnames_key, 9, "ANTNMS%02d", antnames_index%100);
+        antenna_names_csv[0] = '\0';
+        hgets(databuf_header, antnames_key, 71, antenna_names_csv);
+        if(antenna_names_csv[0] == '\0') {
+          hashpipe_warn(user_data->thread_name, "No such key '%s' while inputpairs_index (%d) < nants*npols (%d)!", antnames_key, inputpairs_index, uvh5_header.Nants_data*npols);
+          break;
+        }
+        
+        token = strtok(antenna_names_csv,",");
+        while(token != NULL && inputpairs_index < uvh5_header.Nants_data*npols) {
+          
+          const int strlength = strlen(token);
+          for(int p = 0; p < npols; p++){
+            inputpairs[inputpairs_index].antenna = malloc(strlength);// drop last Char (L.O. ID)
+            strncpy(inputpairs[inputpairs_index].antenna, token, strlength-1);
+            inputpairs[inputpairs_index].antenna[strlength-1] = '\0';
+
+            inputpairs[inputpairs_index++].polarization = polarizations_list[p];
+          }
+          hashpipe_info(user_data->thread_name, "antenna #%d/%d: %s", inputpairs_index/2, uvh5_header.Nants_data, inputpairs[inputpairs_index-1].antenna);
+          token = strtok(NULL, ",");
+        }
+      }
+      UVH5parse_input_map(&uvh5_header, inputpairs);
       UVH5Hadmin(&uvh5_header);
+      for(size_t i = 0; i < uvh5_header.Nants_data*npols; i++) {
+        free(inputpairs[i].antenna);
+      }
+      free(inputpairs);
+
       arrayReferencePosition.LAT = calc_rad_from_degree(uvh5_header.latitude);
       arrayReferencePosition.LON = calc_rad_from_degree(uvh5_header.longitude);
       arrayReferencePosition.ALT = uvh5_header.altitude;
 
       obs_antenna_names = malloc(uvh5_header.Nants_data*sizeof(char*));
 
+      observationMetaData.referenceAntennaIndex = 0;
       // At this point we have XYZ uvh5_header.antenna_positions, and ENU uvh5_header._antenna_enu_positions
       for(int i = 0; i < uvh5_header.Nants_data; i++) {
         int ant_idx = uvh5_header._antenna_num_idx_map[
@@ -284,6 +348,10 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
         obs_antenna_positions[i*3 + 2] = uvh5_header.antenna_positions[ant_idx*3 + 2];
 
         obs_antenna_names[i] = uvh5_header.antenna_names[ant_idx];
+        if (strcmp(obs_antenna_names[i], reference_antenna_name) == 0) {
+          observationMetaData.referenceAntennaIndex = i;
+          hashpipe_info(user_data->thread_name, "Set reference antenna index %d for antenna name %s", observationMetaData.referenceAntennaIndex, reference_antenna_name);
+        }
       }
       // BLADE needs ECEF coordinates
       // It doesn't make sense to convert from ECEF back to XYZ in the uvh5 library
@@ -298,7 +366,6 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
       // observationMetaData.referenceAntennaIndex = uvh5_header._antenna_num_idx_map[
       //   uvh5_header._antenna_numbers_data[0]
       // ];
-      observationMetaData.referenceAntennaIndex = 0;
 
       collect_beamCoordinates(BLADE_ATA_OUTPUT_NBEAM,
           obs_beam_coordinates, obs_phase_center, databuf_header);

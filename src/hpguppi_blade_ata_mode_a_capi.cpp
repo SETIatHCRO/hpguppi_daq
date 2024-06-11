@@ -126,6 +126,7 @@ bool blade_ata_a_initialize(
             .inputDimensions = beamformerInputDimensions,
 
             .preBeamformerChannelizerRate = ata_a_config.channelizerRate,
+            // .preBeamformerPolarizerConvertToCircular = BLADE_ATA_MODE_A_CIRCULAR_POLARIZATION,
 
             .phasorObservationFrequencyHz = observationMeta->rfFrequencyHz,
             .phasorChannelBandwidthHz = observationMeta->channelBandwidthHz,
@@ -170,6 +171,7 @@ void blade_ata_a_terminate() {
     if (!State.RunnersInstances.B) {
         BL_WARN("Can't terminate because Blade Runner isn't initialized.");
         // throw Result::ASSERTION_ERROR;
+        // return;
     }
 
     for(const auto &[key, value]: State.InputIdMap) {
@@ -260,6 +262,7 @@ bool blade_ata_a_compute_step() {
             }
 
             if (!State.Callbacks.OutputBufferFetch(State.UserData, &externalBuffer_output, &bufferId_output)) {
+                BL_WARN("No output buffer available. Skipping input buffer {}.", bufferId_input);
                 State.Callbacks.InputClear(State.UserData, bufferId_input);
                 Plan::Skip();
             }
@@ -288,6 +291,7 @@ bool blade_ata_a_compute_step() {
 
             // Copy worker output to external output buffer.
             Plan::TransferOut(output, worker.getOutputBuffer(), worker);
+            // Plan::TransferOutAsATPFrev(output, worker.getOutputBuffer(), worker);
 
             // Return job identity and increment counter.
             return State.StepCount++; 
@@ -295,7 +299,9 @@ bool blade_ata_a_compute_step() {
     }
 
     // Dequeue last runner job and recycle output buffer.
-    if (ModeB->dequeue(&callbackStep)) {
+    Result result = ModeB->dequeue(&callbackStep);
+    if (result == Result::SUCCESS) {
+    // if (ModeB->dequeue(&callbackStep)) {
         const auto& recycleBuffer_input = State.OutputPointerMap[callbackStep];
         const auto& recycleBufferId_input = State.OutputIdMap[callbackStep];
         const auto& recycleBuffer_output = State.OutputPointerMap[callbackStep];
@@ -307,6 +313,11 @@ bool blade_ata_a_compute_step() {
         State.InputIdMap.erase(callbackStep);
         State.OutputPointerMap.erase(callbackStep);
         State.OutputIdMap.erase(callbackStep);
+    }
+    else if(result == Result::EXHAUSTED) {}
+    else {
+        BL_WARN("ModeB Dequeue result is: {}", result);
+        // assert(0);
     }
 
     // Prevent memory clobber inside spin-loop.

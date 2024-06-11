@@ -125,6 +125,7 @@ bool blade_ata_b_initialize(
             .inputDimensions = beamformerInputDimensions,
     
             .preBeamformerChannelizerRate = ata_b_config.channelizerRate,
+            // .preBeamformerPolarizerConvertToCircular = BLADE_ATA_MODE_B_CIRCULAR_POLARIZATION,
 
             .phasorObservationFrequencyHz = observationMeta->rfFrequencyHz,
             .phasorChannelBandwidthHz = observationMeta->channelBandwidthHz,
@@ -169,6 +170,7 @@ void blade_ata_b_terminate() {
     if (!State.RunnersInstances.B) {
         BL_WARN("Can't terminate because Blade Runner isn't initialized.");
         // throw Result::ASSERTION_ERROR;
+        // return;
     }
 
     for(const auto &[key, value]: State.InputIdMap) {
@@ -294,7 +296,9 @@ bool blade_ata_b_compute_step() {
     }
 
     // Dequeue last runner job and recycle output buffer.
-    if (ModeB->dequeue(&callbackStep)) {
+    Result result = ModeB->dequeue(&callbackStep);
+    if (result == Result::SUCCESS) {
+    // if (ModeB->dequeue(&callbackStep)) {
         const auto& recycleBuffer_input = State.OutputPointerMap[callbackStep];
         const auto& recycleBufferId_input = State.OutputIdMap[callbackStep];
         const auto& recycleBuffer_output = State.OutputPointerMap[callbackStep];
@@ -306,6 +310,11 @@ bool blade_ata_b_compute_step() {
         State.InputIdMap.erase(callbackStep);
         State.OutputPointerMap.erase(callbackStep);
         State.OutputIdMap.erase(callbackStep);
+    }
+    else if(result == Result::EXHAUSTED) {}
+    else {
+        BL_WARN("Result {}, was empty {}", result, ModeB->empty());
+        // assert(0);
     }
 
     // Prevent memory clobber inside spin-loop.

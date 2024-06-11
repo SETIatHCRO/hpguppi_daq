@@ -131,6 +131,7 @@ bool blade_ata_h_initialize(
             .inputDimensions = beamformerInputDimensions,
 
             .preBeamformerChannelizerRate = ata_h_config.channelizerRate,
+            // .preBeamformerPolarizerConvertToCircular = BLADE_ATA_MODE_H_CIRCULAR_POLARIZATION,
 
             .phasorObservationFrequencyHz = observationMeta->rfFrequencyHz,
             .phasorChannelBandwidthHz = observationMeta->channelBandwidthHz,
@@ -172,7 +173,7 @@ bool blade_ata_h_initialize(
             .accumulateRate = BLADE_ATA_MODE_H_ACCUMULATE_RATE, // ata_h_config.accumulateRate
 
             .detectorIntegrationSize = BLADE_ATA_MODE_H_INTEGRATION_SIZE, // ata_h_config.integrationSize
-            .detectorNumberOfOutputPolarizations = 1,
+            .detectorNumberOfOutputPolarizations = BLADE_ATA_MODE_H_OUTPUT_NPOL,
         }
     );
 
@@ -188,6 +189,7 @@ void blade_ata_h_terminate() {
     if (!State.RunnersInstances.B || !State.RunnersInstances.H) {
         BL_WARN("Can't terminate because Blade Runner isn't initialized.");
         // throw Result::ASSERTION_ERROR;
+        // return;
     }
 
     for(const auto &[key, value]: State.InputIdMap) {
@@ -343,18 +345,26 @@ bool blade_ata_h_compute_step() {
 
         // Copy worker output to external output buffer.
         Plan::TransferOut(output, worker.getOutputBuffer(), worker);
+        // Plan::TransferOutAsATPFrev(output, worker.getOutputBuffer(), worker);
 
         // Return job identity.
         return callbackStep;
     });
 
     // Dequeue last runner job and recycle output buffer.
-    if (ModeH->dequeue(&callbackStep)) {
+    Result result = ModeH->dequeue(&callbackStep);
+    if (result == Result::SUCCESS) {
+    // if (ModeH->dequeue(&callbackStep)) {
         const auto& recycleBuffer = State.OutputPointerMap[callbackStep];
         const auto& recycleBufferId = State.OutputIdMap[callbackStep];
         State.Callbacks.OutputBufferReady(State.UserData, recycleBuffer, recycleBufferId);
         State.OutputPointerMap.erase(callbackStep);
         State.OutputIdMap.erase(callbackStep);
+    }
+    else if(result == Result::EXHAUSTED) {}
+    else {
+        BL_WARN("Result {}, was empty {}", result, ModeH->empty());
+        // assert(0);
     }
 
     // Prevent memory clobber inside spin-loop.
