@@ -1,7 +1,11 @@
 #                                               -*- Autoconf -*-
 # Process this file with autoconf to produce a configure script.
 
+<<<<<<< HEAD
 AC_PREREQ([2.69])
+=======
+AC_PREREQ([2.71])
+>>>>>>> *= update blade threads to v1.0, docker image, m4
 AC_INIT([FULL-PACKAGE-NAME],[VERSION],[BUG-REPORT-ADDRESS])
 AM_INIT_AUTOMAKE([foreign subdir-objects])
 LT_INIT

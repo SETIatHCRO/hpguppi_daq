@@ -1,4 +1,3 @@
-version: "3"
 services:
   hp_daq: #docker run -it -v ${PWD}/test:/mnt/buf0 -v ${PWD}/src:/work/hpguppi_daq/src hp_daq /bin/sh
     container_name: hp_daq

@@ -1,72 +1,39 @@
-# syntax=docker/dockerfile:1
-
-####v Ubuntu builder v####
-FROM ubuntu:20.04 AS ubuntu_builder
-
-ARG DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update -y && apt-get install -y \
-# AUTOMAKE
-    automake \
-    autoconf \
-    libtool \
-# BLADE
-    libspdlog-dev \
-    gcc-10 \
-    g++-10 \
-    libfmt-dev \
-# GENERAL
-    git \
-    numactl \
-    linux-tools-generic \
-# HPGUPPI_DAQ
-    libcfitsio-dev \
-# MESON
-    python3-pip \
-# PYSLALIB
-    gfortran \
-# RADIOINTERFEROMETRYC99. Hereafter a dependency of UHV5 and BLADE
-    liberfa-dev \
-# RAWSPEC \
-    pkg-config \
-# RB-HASHPIPE
-    ruby-dev \
-    libncurses5-dev \
-# UVH5
-    libhdf5-dev \
-# LIBPostgresSQL (M1 pip install meson ninja)
-    libpq-dev
-
-RUN python3 -m pip install meson ninja
-
-####^ Ubuntu builder ^####
-
 ####v Nvidia builder v####
-FROM nvidia/cuda:11.4.2-devel-ubuntu20.04 AS nvidia_builder
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS nvidia_builder
 # RUN apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/3bf863cc.pub
 # RUN  apt-get update --fix-missing
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update -y && apt-get install -y \
+RUN apt-get --fix-missing update -y && apt-get install -y \
     g++-10 \
     gcc-10 \
     git \
     liberfa-dev \
     libfmt-dev \
     libhdf5-dev \
+    libboost-all-dev \
+    libbenchmark-dev \
+    libgtest-dev \
     libspdlog-dev \
+    build-essential \
+    # GENERAL
+    numactl \
     linux-tools-generic \
+    # HPGUPPI_DAQ
+    libcfitsio-dev \
+    # PYSLALIB
+    gfortran \
+    # RB-HASHPIPE
+    ruby-dev \
+    libncurses5-dev \
     pkg-config \
-    python3-pip \
-    libpq-dev
+    cmake \
+    python3-dev \
+    python3-pip
+    # libpq-dev
 
-RUN python3 -m pip install meson ninja
-
-# # https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#runfile
-# RUN ​​wget https://developer.download.nvidia.com/compute/cuda/11.4.1/local_installers/cuda_11.4.1_470.57.02_linux.run \
-# && sh ./cuda_11.4.1_470.57.02_linux.run --silent --driver --toolkit --toolkitpath=/usr/local/cuda-11.4.1 
-
+RUN python3 -m pip install meson ninja numpy astropy pandas
 ####^ Nvidia builder ^####
 
 ####v BLADE Builder v####
@@ -78,14 +45,14 @@ WORKDIR /work
 RUN cd /work \
 && git clone https://github.com/luigifcruz/blade \
 && cd blade \
-&& git submodule update --init \
-&& CC=gcc-10 CXX=g++-10 meson build -Dprefix=${PWD}/install \
+&& git submodule update --init --recursive \
+&& CC=gcc-10 CXX=g++-10 meson setup build -Dprefix=${PWD}/install \
 && cd build \
 && ninja install
 ####^ BLADE Builder ^####
 
 ####v Hashpipe Builder v####
-FROM ubuntu_builder AS hashpipe_builder
+FROM nvidia_builder AS hashpipe_builder
 
 WORKDIR /work
 
@@ -99,7 +66,7 @@ RUN cd /work \
 ####^ Hashpipe Builder ^####
 
 ####v SLA Builder v####
-FROM ubuntu_builder AS sla_builder
+FROM nvidia_builder AS sla_builder
 
 WORKDIR /work
 
@@ -109,8 +76,20 @@ RUN cd /work \
 && make libsla.so
 ####^ SLA Builder ^####
 
+# ####v xGPU Builder v####
+# FROM nvidia_builder AS xgpu_builder
+
+# WORKDIR /work
+
+# RUN cd /work \
+# && git clone https://github.com/GPU-correlators/xGPU \
+# && cd xGPU/src \
+# && make clean \
+# && make NTIME=32768 NTIME_PIPE=128 NPOL=2 NFREQUENCY=512 NSTATION=16 CUDA_ARCH=sm_86 DP4A=yes
+# ####^ xGPU Builder ^####
+
 ####v UVH5C99 Builder v####
-FROM ubuntu_builder AS uvh5c99_builder
+FROM nvidia_builder AS uvh5c99_builder
 
 WORKDIR /work
 
@@ -118,58 +97,50 @@ RUN cd /work \
 && git clone https://github.com/MydonSolutions/uvh5c99 \
 && cd uvh5c99 \
 && git submodule update --init \
-&& meson build \
+&& meson setup build -Dprefix=${PWD}/install \
 && cd build \
-&& ninja
+&& ninja install
 ####^ UVH5C99 Builder ^####
 
-####v FILTERBANKH5C99 Builder v####
-FROM ubuntu_builder AS filterbankh5c99_builder
+####v FILTERBANKC99 Builder v####
+FROM nvidia_builder AS filterbankc99_builder
 
 WORKDIR /work
 
 RUN cd /work \
-&& git clone https://github.com/MydonSolutions/filterbankh5c99 \
-&& cd filterbankh5c99 \
+&& git clone https://github.com/MydonSolutions/filterbankc99 \
+&& cd filterbankc99 \
 && git submodule update --init \
-&& meson build -Dprefix=/work/filterbankh5c99/install \
+&& meson setup build -Dprefix=${PWD}/install \
 && cd build \
 && ninja install
-####^ FILTERBANKH5C99 Builder ^####
+####^ FILTERBANKC99 Builder ^####
 
 ####v HPDAQ Builder v####
-FROM ubuntu_builder as hpdaq_builder
+FROM nvidia_builder as hpdaq_builder
 
 # yaml for the init_hpguppi.py script
-RUN python3 -m pip install yamlpy
+# RUN python3 -m pip install yamlpy
 
 # Install dependencies
 WORKDIR /work
 RUN mkdir /work/logs
 
-## XGPU
-## without xgpu due to container lacking gpu
-# RUN cd /work \
-# && git clone https://github.com/GPU-correlators/xGPU \
-# && cd xGPU/src \
-# && make clean \
-# && make NTIME=32768 NTIME_PIPE=128 NPOL=2 NFREQUENCY=512 NSTATION=16 CUDA_ARCH=sm_86 DP4A=yes
-
 ## Hashpipe
 COPY --from=hashpipe_builder /work/hashpipe /work/hashpipe
 
-## RB-HASHPIPE
-RUN cd /work \
-&& gem install redis \
-&& git clone https://github.com/david-macmahon/rb-hashpipe \
-&& cd rb-hashpipe \
-&& rake package \
-&& cd pkg \
-&& gem install \
-    --local ./hashpipe-0.6.3.gem -- \
-    --with-hashpipe-include=/work/hashpipe/src \
-    --with-hashpipestatus-lib=/work/hashpipe/src/.libs \
-&& gem install curses
+# ## RB-HASHPIPE
+# RUN cd /work \
+# && gem install redis \
+# && git clone https://github.com/david-macmahon/rb-hashpipe \
+# && cd rb-hashpipe \
+# && rake package \
+# && cd pkg \
+# && gem install \
+#     --local ./hashpipe-0.6.3.gem -- \
+#     --with-hashpipe-include=/work/hashpipe/src \
+#     --with-hashpipestatus-lib=/work/hashpipe/src/.libs \
+# && gem install curses
 
 ## BLADE
 COPY --from=blade_builder /work/blade /work/blade
@@ -177,16 +148,20 @@ COPY --from=blade_builder /work/blade /work/blade
 ## SLA
 COPY --from=sla_builder /work/pyslalib /work/pyslalib
 
+## xGPU
+# COPY --from=xgpu_builder /work/xGPU /work/xGPU
+
 ## UVH5C99
 COPY --from=uvh5c99_builder /work/uvh5c99 /work/uvh5c99
 
-## FILTERBANKH5C99
-COPY --from=filterbankh5c99_builder /work/filterbankh5c99 /work/filterbankh5c99
+## FILTERBANKC99
+COPY --from=filterbankc99_builder /work/filterbankc99 /work/filterbankc99
 
 ## Hpguppi_daq
 COPY . /work/hpguppi_daq
 RUN cd /work/hpguppi_daq/src \
 && git submodule update --init \
+&& cd ata_antenna_weights_binary && meson setup build && cd build && ninja install && cd ../../ \
 && rm -rf install-sh libtool ltmain.sh install-sh depcomp configure config.* aclocal.m4 compile automa4te.cache/ missing Makefile Makefile.in \
 && autoreconf -is \
 && mkdir ../build \
@@ -194,10 +169,10 @@ RUN cd /work/hpguppi_daq/src \
 && CXX=g++-10 ../src/configure \
     --with-sla-lib=/work/pyslalib \
     --with-hashpipe=/work/hashpipe/src/.libs \
-    --with-cuda-include=/usr/local/cuda-11.4.1/include \
-    --with-filterbankh5c99=/work/filterbankh5c99/install \
-&& make
-#   --with-uvh5=/work/uvh5c99/build \
-#   --with-xgpu=/work/xGPU/src \ # without xgpu due to container lacking gpu
-#   --with-blade=/work/blade/install \ # without blade due to container lacking gpu
+    --with-cuda-include=/usr/local/cuda-12.2/include \
+    --with-filterbankc99=/work/filterbankc99/install \
+    --with-uvh5=/work/uvh5c99/install \
+    --with-blade=/work/blade/install
+# && make
+    # --with-xgpu=/work/xGPU/src 
 ####^ HPDAQ Builder ^####
