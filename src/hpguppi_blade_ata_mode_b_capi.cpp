@@ -52,10 +52,11 @@ bool blade_ata_b_initialize(
     double* antennaPositions_xyz,
     double _Complex* antennaCalibrations
 ) {
-    if (State.pipeline) {
+    if (State.pipelineRunner) {
         BL_FATAL("Can't initialize because Blade Runner is already initialized.");
         throw Result::ASSERTION_ERROR;
     }
+    BL_INFO("Initializing...");
 
     std::vector<XYZ> antennaPositions(ata_b_config.inputDims.NANTS);
     std::vector<RA_DEC> beamCoordinates(ata_b_config.beamformerBeams);
@@ -81,6 +82,13 @@ bool blade_ata_b_initialize(
         ata_b_config.inputDims.NCHANS,
         ata_b_config.inputDims.NTIME,
         ata_b_config.inputDims.NPOLS,
+    });
+
+    auto outputShape = ArrayShape({
+        ata_b_config.beamformerBeams,
+        ata_b_config.inputDims.NCHANS * ata_b_config.channelizerRate,
+        ata_b_config.inputDims.NTIME / ata_b_config.channelizerRate,
+        2 // detector disabled
     });
 
     auto phasorAntennaCalibrations = ArrayTensor<Device::CPU, CF64>({
@@ -123,6 +131,7 @@ bool blade_ata_b_initialize(
     State.pipelineRunner = std::make_shared<Runner>();
     BladePipeline::Config config = {      
         .inputShape = State.inputShape,
+        .outputShape = outputShape,
 
         .preBeamformerChannelizerRate = ata_b_config.channelizerRate,
         // .preBeamformerPolarizerConvertToCircular = BLADE_ATA_MODE_B_CIRCULAR_POLARIZATION,
@@ -166,8 +175,8 @@ bool blade_ata_b_initialize(
         }
     );
 
-    State.InputPointerMap.reserve(numberOfWorkers);
-    State.OutputPointerMap.reserve(numberOfWorkers);
+    State.InputPointerMap.reserve(State.pipelineRunner->numberOfStreams());
+    State.OutputPointerMap.reserve(State.pipelineRunner->numberOfStreams());
 
     return true;
 }

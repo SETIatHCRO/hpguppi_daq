@@ -90,6 +90,12 @@ bool blade_ata_h_initialize(
         ata_h_config.inputDims.NTIME,
         ata_h_config.inputDims.NPOLS,
     });
+    auto beamformerOutputShape = ArrayShape({
+        ata_h_config.beamformerBeams,
+        ata_h_config.inputDims.NCHANS,
+        ata_h_config.inputDims.NTIME,
+        ata_h_config.inputDims.NPOLS,
+    });
 
     auto phasorAntennaCalibrations = ArrayTensor<Device::CPU, CF64>({
         ata_h_config.inputDims.NANTS,
@@ -131,6 +137,7 @@ bool blade_ata_h_initialize(
     State.pipelineRunner = std::make_shared<Runner>();
     BladePipelineB::Config configB = {  
         .inputShape = State.inputShape,
+        .outputShape = beamformerOutputShape,
 
         .preBeamformerChannelizerRate = ata_h_config.channelizerRate,
         // .preBeamformerPolarizerConvertToCircular = BLADE_ATA_MODE_H_CIRCULAR_POLARIZATION,
@@ -179,17 +186,19 @@ bool blade_ata_h_initialize(
         State.gatherFrequency,
         {
             .axis = 2,
-            .multiplier = BLADE_ATA_MODE_H_ACCUMULATE_RATE,
+            .multiplier = ata_h_config.accumulateRate,
         },
         {
             .buf = State.pipelineB->getOutputBuffer(),
         }
     );
 
+    BL_INFO("Gather output shape {}.", State.gatherFrequency->getOutputBuffer().shape());
+
     BladePipelineH::Config configH = {
         .inputShape = State.gatherFrequency->getOutputBuffer().shape(),
 
-        .detectorIntegrationSize = BLADE_ATA_MODE_H_INTEGRATION_SIZE, // ata_h_config.integrationSize
+        .detectorIntegrationSize = ata_h_config.integrationSize,
         .detectorNumberOfOutputPolarizations = BLADE_ATA_MODE_H_OUTPUT_NPOL,
     };
     State.pipelineRunner->connect(
@@ -200,8 +209,8 @@ bool blade_ata_h_initialize(
         }
     );
 
-    State.InputPointerMap.reserve(numberOfWorkers);
-    State.OutputPointerMap.reserve(numberOfWorkers);
+    State.InputPointerMap.reserve(State.pipelineRunner->numberOfStreams());
+    State.OutputPointerMap.reserve(State.pipelineRunner->numberOfStreams());
 
     return true;
 }

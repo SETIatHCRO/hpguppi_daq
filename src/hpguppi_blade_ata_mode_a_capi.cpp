@@ -84,10 +84,10 @@ bool blade_ata_a_initialize(
     });
     
     State.outputShape = ArrayShape({
-        ata_a_config.beamformerBeams,
+        ata_a_config.beamformerBeams + (BLADE_ATA_MODE_A_OUTPUT_INCOHERENT_BEAM ? 1 : 0),
         ata_a_config.inputDims.NCHANS * ata_a_config.channelizerRate,
-        ata_a_config.inputDims.NTIME / ata_a_config.channelizerRate,
-        1, // detector enabled
+        ata_a_config.inputDims.NTIME / (ata_a_config.channelizerRate * ata_a_config.integrationSize),
+        ata_a_config.numberOfOutputPolarizations, // detector enabled
     });
 
     auto phasorAntennaCalibrations = ArrayTensor<Device::CPU, CF64>({
