@@ -77,7 +77,10 @@ hpguppi_blade_c_api_files = \
 		hpguppi_blade_ata_mode_h_config.h \
 		hpguppi_blade_ata_mode_b_capi.cpp \
 		hpguppi_blade_ata_mode_b_capi.h \
-		hpguppi_blade_ata_mode_b_config.h
+		hpguppi_blade_ata_mode_b_config.h \
+		hpguppi_blade_ata_mode_c_capi.cpp \
+		hpguppi_blade_ata_mode_c_capi.h \
+		hpguppi_blade_ata_mode_c_config.h
 
 noinst_LTLIBRARIES = libbladeapi.la
 libbladeapi_la_SOURCES = $(hpguppi_blade_c_api_files)
