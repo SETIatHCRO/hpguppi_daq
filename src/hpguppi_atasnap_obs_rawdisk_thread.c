@@ -86,6 +86,9 @@ static void *run(hashpipe_thread_args_t * args)
   /* Init output file descriptor (-1 means no file open) */
   int* fdraws = malloc(sizeof(int));
   int nbeams = 1;
+  int obsnchan = 0;
+  int nants_drop = 0;
+  int nants = 0;
   int nfdraws = 0;
 
   /* Set I/O priority class for this thread to "real time" */
@@ -277,6 +280,15 @@ static void *run(hashpipe_thread_args_t * args)
           }
           else{
             nfdraws = 1;
+
+            nants_drop = 0;
+            hgeti4(datablock_header, "DROPNANT", &nants_drop);
+            nants = 1;
+            hgeti4(datablock_header, "NANTS", &nants);
+            obsnchan = 1;
+            hgeti4(datablock_header, "OBSNCHAN", &obsnchan);
+            hashpipe_info(thread_name, "Dropping %d/%d antenna when writing RAW.", nants_drop, nants);
+            file_blocksize = (file_blocksize/nants)*(nants-nants_drop);
           }
 
           fdraws = malloc(nfdraws*sizeof(int));
@@ -418,8 +430,12 @@ static void *run(hashpipe_thread_args_t * args)
           hputi4(datablock_header, "NBEAM", nbeams);
           hputi4(datablock_header, "BEAM_ID", -1); // default is unknown, ensuring the key exists
         }
+        else {
+          hputi4(datablock_header, "OBSNCHAN", (obsnchan/(nants))*(nants-nants_drop));
+          hputi4(datablock_header, "NANTS", nants-nants_drop);
+        }
         hputi4(datablock_header, "BLOCSIZE", file_blocksize);
-        
+  
         if(waiting != -1){
           /* Note writing status */
           waiting = -1;
