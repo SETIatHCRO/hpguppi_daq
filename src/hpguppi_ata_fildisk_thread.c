@@ -41,7 +41,7 @@ static const char BACKEND_RECORD[] =
 #define FILTERBANK_FBH5 0
 #define FILTERBANK_SIGPROC 1
 
-#define FILTERBANK_FORMAT FILTERBANK_FBH5
+#define FILTERBANK_FORMAT FILTERBANK_SIGPROC
 
 #if FILTERBANK_FORMAT == FILTERBANK_FBH5
 #define FILTERBANK_FILE_T filterbank_h5_file_t
@@ -521,12 +521,21 @@ static void *run(hashpipe_thread_args_t * args)
           filbanks[i].data = datablock_header
             + i*bytesize_perbeam;
           
-          if (filbanks[i].ntimes_per_write*filbanks[i].header.nifs == 1) {
-            rv = FILTERBANK_WRITE(filbanks+i);
-          }
-          else {
+          #if FILTERBANK_FORMAT == FILTERBANK_FBH5
+            if (filbanks[i].ntimes_per_write*filbanks[i].header.nifs == 1) {
+              // optimised write kernel, better throughput for most common case
+              // thread actually doesn't keep up (seems to hang) with FTP write for FBH5
+              rv = FILTERBANK_WRITE(filbanks+i);
+            }
+            else {
+              rv = FILTERBANK_WRITE_FTP(filbanks+i);
+            }
+          #else
+            // for SIGPROC FTP is reversed, and regular write is not
+            // so always use FTP
             rv = FILTERBANK_WRITE_FTP(filbanks+i);
-          }
+          #endif
+
           if(rv != 0) {
               perror(thread_name);
               hashpipe_error(
