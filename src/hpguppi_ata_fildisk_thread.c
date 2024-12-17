@@ -211,7 +211,7 @@ static void *run(hashpipe_thread_args_t * args)
   int curblock_in=0;
 
   char *datablock_header;
-  size_t bytesize_perbeam=0, bytesize_perspectrum=0;
+  size_t bytesize_perbeam=0, bytesize_perspectrum=0, bytesize_perchanchunk=0;
   int n_spectra;
   int got_packet_0=0;
   FILTERBANK_FILE_T* filbanks = NULL;
@@ -226,7 +226,7 @@ static void *run(hashpipe_thread_args_t * args)
   char statuskey_key[9];
 
   /* Misc counters, etc */
-  int i;
+  int i, c;
 
   uint64_t obs_npacket_total=0;
   uint64_t ndrop_obs_start=0, ndrop_obs_current=0;
@@ -377,10 +377,10 @@ static void *run(hashpipe_thread_args_t * args)
           flag_state_update = 1;
           state = RECORD;
           hput_obsdone(st, 0);
-          hgeti4(datablock_header, "STTVALID", &gp.stt_valid);
 
           hashpipe_status_lock_safe(st);
           {
+            hgeti4(st->buf, "STTVALID", &gp.stt_valid);
             hgetu8(st->buf, "NDROP", &ndrop_obs_start);
           }
           hashpipe_status_unlock_safe(st);
@@ -487,10 +487,19 @@ static void *run(hashpipe_thread_args_t * args)
 
           memcpy(&filbanks[i].header, &filbank_header, sizeof(filterbank_header_t));
           filbanks[i].ntimes_per_write = n_spectra;
+          #if FILTERBANK_FORMAT == FILTERBANK_FBH5
+          // sigproc struct does not have nchans_per_write...
+          filbanks[i].nchans_per_write = 0; // auto deduce for 1 MB chunks
+          #endif
           FILTERBANK_OPEN(
             fname,
             filbanks+i
           );
+          #if FILTERBANK_FORMAT == FILTERBANK_FBH5
+          hashpipe_info(thread_name, "Opened '%s' (nchans per write = %ld/%d)", fname, filbanks[i].nchans_per_write, filbank_header.nchans);
+          #else
+          hashpipe_info(thread_name, "Opened '%s'", fname);
+          #endif
 
           // if (filbanks[i].file_id == 0) {
           //     perror(thread_name);
@@ -517,37 +526,42 @@ static void *run(hashpipe_thread_args_t * args)
         /* Write data */
         datablock_header = hpguppi_databuf_data(indb, curblock_in);
         for(i = 0; i < filbank_header.nbeams; i++) {
-          // no transposition expected, assuming TPF data, and 1 spectrum per dump
-          filbanks[i].data = datablock_header
-            + i*bytesize_perbeam;
-          
+          // receiving FTP data to be written as TPF data
           #if FILTERBANK_FORMAT == FILTERBANK_FBH5
-            if (filbanks[i].ntimes_per_write*filbanks[i].header.nifs == 1) {
-              // optimised write kernel, better throughput for most common case
-              // thread actually doesn't keep up (seems to hang) with FTP write for FBH5
-              rv = FILTERBANK_WRITE(filbanks+i);
-            }
-            else {
-              rv = FILTERBANK_WRITE_FTP(filbanks+i);
-            }
-          #else
-            // for SIGPROC FTP is reversed, and regular write is not
-            // so always use FTP
-            rv = FILTERBANK_WRITE_FTP(filbanks+i);
-          #endif
+          bytesize_perchanchunk = (bytesize_perspectrum/filbank_header.nchans)*filbanks[i].nchans_per_write;
 
-          if(rv != 0) {
-              perror(thread_name);
-              hashpipe_error(
-                thread_name,
-                "Error writing data (block#=%d, beam#=%d, len=%d, rv=%d)",
-                curblock_in,
-                i,
-                bytesize_perbeam,
-                rv
-              );
-              pthread_exit(NULL);
+          hashpipe_info(thread_name, "Writing %d channel-chunks to file #%d.", filbank_header.nchans/filbanks[i].nchans_per_write, i);
+          for(c = 0; c < filbank_header.nchans/filbanks[i].nchans_per_write; c ++) {
+          #endif
+            filbanks[i].data = datablock_header
+              + i*bytesize_perbeam + c*bytesize_perchanchunk;
+            
+            #if FILTERBANK_FORMAT == FILTERBANK_FBH5
+              if (filbanks[i].ntimes_per_write*filbanks[i].header.nifs == 1) {
+                rv = FILTERBANK_WRITE(filbanks+i);
+              }
+              else {
+                rv = FILTERBANK_WRITE_FTP(filbanks+i);
+              }
+            #else
+              rv = FILTERBANK_WRITE_FTP(filbanks+i);
+            #endif
+
+            if(rv != 0) {
+                perror(thread_name);
+                hashpipe_error(
+                  thread_name,
+                  "Error writing data (block#=%d, beam#=%d, len=%d, rv=%d)",
+                  curblock_in,
+                  i,
+                  bytesize_perbeam,
+                  rv
+                );
+                pthread_exit(NULL);
+            }
+          #if FILTERBANK_FORMAT == FILTERBANK_FBH5
           }
+          #endif
         }
       }
       /*** FIL Disk write out END*/
