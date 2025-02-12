@@ -11,8 +11,8 @@
 #define BLADE_ATA_MODE_H_NPOL 2
 
 #define BLADE_ATA_MODE_H_OUTPUT_NBEAM 2
-#define BLADE_ATA_MODE_H_ACCUMULATE_RATE 61 // [1]; <= 1 mitigates the accumulation
-#define BLADE_ATA_MODE_H_INTEGRATION_SIZE 16 // [1]; <= 1 mitigates the integration
+#define BLADE_ATA_MODE_H_ACCUMULATE_RATE 32 // [1]; <= 1 mitigates the accumulation
+#define BLADE_ATA_MODE_H_INTEGRATION_SIZE 32 // [1]; <= 1 mitigates the integration
 #define BLADE_ATA_MODE_H_OUTPUT_NPOL 1
 #define BLADE_ATA_MODE_H_OUTPUT_INCOHERENT_BEAM false
 #define BLADE_ATA_MODE_H_CIRCULAR_POLARIZATION false

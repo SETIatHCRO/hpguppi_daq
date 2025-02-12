@@ -14,7 +14,7 @@ hashpipe_databuf_t *hpguppi_blade_output_databuf_create(int instance_id, int dat
     size_t header_size = sizeof(hashpipe_databuf_t)
                        + sizeof(hashpipe_databuf_alignment);
     size_t block_size  = sizeof(hpguppi_blade_block_t);
-    int    n_block = N_INPUT_BLOCKS;
+    int    n_block = N_BLADE_OUTPUT_BLOCKS;
 
     hpguppi_blade_output_databuf_t * d = (hpguppi_blade_output_databuf_t *)
         hashpipe_databuf_create(

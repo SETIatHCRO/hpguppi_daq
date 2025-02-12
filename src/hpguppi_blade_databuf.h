@@ -20,6 +20,8 @@
 
 #include "hpguppi_ata_blade_mode.h"
 
+#define N_BLADE_OUTPUT_BLOCKS 8
+
 typedef struct {
   char hdr[BLOCK_HDR_SIZE];
   char data[BLADE_BLOCK_DATA_SIZE];
@@ -33,7 +35,7 @@ typedef uint8_t hashpipe_databuf_alignment[
 typedef struct  {
   hashpipe_databuf_t header;
   hashpipe_databuf_alignment padding; // Maintain data alignment
-  hpguppi_blade_block_t block[N_INPUT_BLOCKS];
+  hpguppi_blade_block_t block[N_BLADE_OUTPUT_BLOCKS];
 } hpguppi_blade_output_databuf_t;
 
 /*
