@@ -31,20 +31,25 @@ AC_DEFUN([AX_CHECK_UVH5C99], [
                                 # Not found there, error
                                 AC_MSG_ERROR([uvh5.h header file not found])))
 
-    orig_LDFLAGS="${LDFLAGS}"
-    LDFLAGS="${orig_LDFLAGS} -L${UVH5C99DIR}/lib"
-    AC_CHECK_LIB([uvh5], [UVH5permute_uvws],
-                # Found
-                AC_SUBST(UVH5C99_LIBDIR,${UVH5C99DIR}/lib),
-                # Not found there, check UVH5C99DIR
-                AS_UNSET(ac_cv_lib_uvh5_UVH5permute_uvws)
-                LDFLAGS="${orig_LDFLAGS} -L${UVH5C99DIR}"
-                AC_CHECK_LIB([uvh5], [UVH5permute_uvws],
-                            # Found
-                            AC_SUBST(UVH5C99_LIBDIR,${UVH5C99DIR}),
-                            # Not found there, error
-                            AC_MSG_ERROR([UVH5C99 library not found])))
-    LDFLAGS="${orig_LDFLAGS}"
+    AC_CHECK_FILE([${UVH5C99DIR}/lib/libuvh5.so])
+    AC_CHECK_FILE([${UVH5C99DIR}/libuvh5.so])
+    AC_CHECK_FILE([${UVH5C99DIR}/lib/x86_64-linux-gnu/libuvh5.so])
+    AC_SUBST(UVH5C99_LIBDIR,${UVH5C99DIR}/lib/x86_64-linux-gnu)
+
+    # orig_LDFLAGS="${LDFLAGS}"
+    # LDFLAGS="${orig_LDFLAGS} -lh5dsc99 -L${UVH5C99DIR}/lib/x86_64-linux-gnu"
+    # AC_CHECK_LIB([uvh5], [UVH5permute_uvws],
+    #             # Found
+    #             AC_SUBST(UVH5C99_LIBDIR,${UVH5C99DIR}/lib),
+    #             # Not found there, check UVH5C99DIR
+    #             AS_UNSET(ac_cv_lib_uvh5_UVH5permute_uvws)
+    #             LDFLAGS="${orig_LDFLAGS} -lh5dsc99 -L${UVH5C99DIR}/lib/x86_64-linux-gnu"
+    #             AC_CHECK_LIB([uvh5], [UVH5permute_uvws],
+    #                         # Found
+    #                         AC_SUBST(UVH5C99_LIBDIR,${UVH5C99DIR}/lib/x86_64-linux-gnu),
+    #                         # Not found there, error
+    #                         AC_MSG_ERROR([UVH5C99 library not found])))
+    # LDFLAGS="${orig_LDFLAGS}"
 
     uvh5c99_enabled=1;
   fi

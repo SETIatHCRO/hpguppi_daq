@@ -106,7 +106,8 @@ endif
 
 if FILTERBANKC99_ENABLED
 hpguppi_daq_la_LDFLAGS += -L"@FILTERBANKC99_LIBDIR@" -Wl,-rpath,"@FILTERBANKC99_LIBDIR@"
-hpguppi_daq_la_LIBADD  += -lfilterbankc99 -lh5dsc99
+hpguppi_daq_la_LIBADD  += -lfilterbankc99
+hpguppi_daq_la_LIBADD  += -lh5dsc99
 hpguppi_daq_la_CFLAGS  += -I "@FILTERBANKC99_INCDIR@"
 
 if BLADE_ENABLED
@@ -133,7 +134,6 @@ endif
 
 hpguppi_daq_la_LDFLAGS += -L"@XGPU_LIBDIR@" -lxgpu -Xlinker -lrt
 hpguppi_daq_la_CFLAGS  += -I "@XGPU_INCDIR@"
-endif
 
 if UVH5C99_ENABLED
 hpguppi_threads += \
@@ -143,6 +143,9 @@ hpguppi_daq_la_LIBADD += -luvh5
 hpguppi_daq_la_CFLAGS  += -I "@UVH5C99_INCDIR@"
 hpguppi_daq_la_CFLAGS  += -I "@UVH5C99_INCDIR@/../external_src/tomlc99"
 endif # UVH5C99_ENABLED 
+
+endif
+
 
 if RADIOINTERFEROMETRYC99_ENABLED
 hpguppi_daq_la_LDFLAGS += -L"@RADIOINTERFEROMETRYC99_LIBDIR@"
