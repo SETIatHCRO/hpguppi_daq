@@ -119,12 +119,9 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
   char buf_status[80];
 
   {// poll once for an incoming block
-    // int hpguppi_databuf_wait_rv = hpguppi_databuf_wait_filled_timeout(
-    //   user_data->in, user_data->in_index,
-    //   &user_data->ts_buffer_wait_timeout
-    // );
-    int hpguppi_databuf_wait_rv = hpguppi_databuf_check_filled(
-      user_data->in, user_data->in_index
+    int hpguppi_databuf_wait_rv = hpguppi_databuf_wait_filled_timeout(
+      user_data->in, user_data->in_index,
+      &user_data->ts_buffer_wait_timeout
     );
 
     clock_gettime(CLOCK_MONOTONIC, &ts_now);
@@ -514,15 +511,6 @@ void blade_cb_input_buffer_enqueued(void* user_data_void, size_t buffer_input_id
       tbin *= BLADE_ATA_CONFIG.integrationSize;
       tbin *= BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
     }
-
-    #elif BLADE_ATA_MODE == BLADE_ATA_MODE_C
-    hputr8(databuf_header, "XTIMEINT", BLADE_ATA_CONFIG.channelizerRate*BLADE_ATA_CONFIG.integrationSize*tbin);
-    hputr8(databuf_header, "NSAMPLES", 1.0); // should be a ratio of dropped packets to expected packets...
-    hputi4(databuf_header, "NCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate);
-    hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NANTS*BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate);
-    chanbw /= BLADE_ATA_CONFIG.channelizerRate;
-    tbin *= BLADE_ATA_CONFIG.channelizerRate;
-    tbin *= BLADE_ATA_CONFIG.integrationSize;
     #else
     hputi4(databuf_header, "NCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
     hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
@@ -546,12 +534,9 @@ bool blade_cb_output_buffer_fetch(void* user_data_void, void** buffer, size_t* b
   blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
 
   {// poll if output buffer is free
-    // int hpguppi_databuf_wait_rv = hpguppi_databuf_wait_free_timeout(
-    //   user_data->out, user_data->out_index_free,
-    //   &user_data->ts_buffer_wait_timeout
-    // );
-    int hpguppi_databuf_wait_rv = hpguppi_databuf_check_free(
-      user_data->out, user_data->out_index_free
+    int hpguppi_databuf_wait_rv = hpguppi_databuf_wait_free_timeout(
+      user_data->out, user_data->out_index_free,
+      &user_data->ts_buffer_wait_timeout
     );
     if (hpguppi_databuf_wait_rv == HASHPIPE_TIMEOUT) {
       if (user_data->status_state != 2)
