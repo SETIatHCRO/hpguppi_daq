@@ -3,4 +3,16 @@
 
 # ... except for these...
 !.gitignore
+!ax_check_x86_features.m4
+!ax_cxx_check_lib.m4
+!ax_gcc_x86_cpu_supports.m4
 !hashpipe.m4
+!ibverbs.m4
+!sla.m4
+!rawspec.m4
+!xgpu.m4
+!cuda.m4
+!blade.m4
+!uvh5c99.m4
+!radiointerferometryc99.m4
+!filterbankc99.m4

@@ -1,9 +1,9 @@
 #                                               -*- Autoconf -*-
 # Process this file with autoconf to produce a configure script.
 
-AC_PREREQ([2.65])
-AC_INIT([FULL-PACKAGE-NAME], [VERSION], [BUG-REPORT-ADDRESS])
-AM_INIT_AUTOMAKE([foreign])
+AC_PREREQ([2.69])
+AC_INIT([FULL-PACKAGE-NAME],[VERSION],[BUG-REPORT-ADDRESS])
+AM_INIT_AUTOMAKE([foreign subdir-objects])
 LT_INIT
 AM_SILENT_RULES([yes])
 AC_CONFIG_SRCDIR([hpguppi_databuf.h])
@@ -19,30 +19,55 @@ AS_VAR_SET_IF(CFLAGS,[],[CFLAGS=])
 
 # Checks for programs.
 AC_PROG_CC
+AC_PROG_CXX
 
-# Check for HASHPIPE
+# Check processor flags, set empty X86_FEATURE_CFLAGS if not x86 arch
+AC_RUN_IFELSE(
+    [AC_LANG_PROGRAM([#include <stdlib.h>],
+        [__builtin_cpu_init ();]
+    )],
+    [AX_CHECK_X86_FEATURES],
+    [X86_FEATURE_CFLAGS=]
+)
+
+AM_CONDITIONAL([HAVE_AVX512F],
+               [test "x$ax_cv_gcc_x86_cpu_supports_avx512f" = xyes])
+
+# Check for hashpipe
 AX_CHECK_HASHPIPE
+
+# Check for ibverbs
+AX_CHECK_IBVERBS
+
+# Check for sla
+AX_CHECK_SLA
+
+# Check for rawspec
+# AX_CHECK_RAWSPEC
+
+# Check for xgpu
+AX_CHECK_XGPU
+
+# Check for cuda
+AX_CHECK_CUDA
+
+# Check for blade
+AX_CHECK_BLADE
+
+# Check for uvh5
+AX_CHECK_UVH5C99
+
+# Check for radiointerferometry
+AX_CHECK_RADIOINTERFEROMETRY99
+
+# Check for filterbankh5
+AX_CHECK_FILTERBANKC99
 
 # Checks for libraries.
 #AC_CHECK_LIB([pthread], [pthread_create])
 AC_CHECK_LIB([m], [cos])
 #AC_CHECK_LIB([rt], [clock_gettime])
 #AC_CHECK_LIB([z], [crc32])
-
-AC_ARG_WITH([libsla],
-            AC_HELP_STRING([--with-libsla=DIR],
-                           [Location of SLA library]),
-            [LIBSLADIR="$withval"],
-            [LIBSLADIR="."])
-
-orig_LDFLAGS="${LDFLAGS}"
-LDFLAGS="${orig_LDFLAGS} -L${LIBSLADIR}"
-AC_CHECK_LIB([sla], [sla_obs_],
-             # Found
-             AC_SUBST(LIBSLADIR,${LIBSLADIR}),
-             # Not found there, error
-             AC_MSG_ERROR([SLA library not found]))
-LDFLAGS="${orig_LDFLAGS}"
 
 ## Checks for header files.
 #AC_CHECK_HEADERS([netdb.h stdint.h stdlib.h string.h sys/socket.h sys/time.h unistd.h zlib.h])

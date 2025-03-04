@@ -2,39 +2,63 @@
  *
  * Routines dealing with time conversion.
  */
-#include <stdio.h>
-#include <time.h>
-#include <sys/time.h>
-#include <hashpipe.h>
-#include "slalib.h"
+#include "hpguppi_time.h"
 
-int get_current_mjd(int *stt_imjd, int *stt_smjd, double *stt_offs) {
+int get_mjd_from_timespec(const struct timespec * ts,
+    int *stt_imjd, int *stt_smjd, double *stt_offs)
+{
     int rv;
-    struct timeval tv;
     struct tm gmt;
     double mjd;
 
-    rv = gettimeofday(&tv,NULL);
-    if (rv) { return(HASHPIPE_ERR_SYS); }
-
-    if (gmtime_r(&tv.tv_sec, &gmt)==NULL) { return(HASHPIPE_ERR_SYS); }
+    if (gmtime_r(&ts->tv_sec, &gmt)==NULL) { return(HASHPIPE_ERR_SYS); }
 
     slaCaldj(gmt.tm_year+1900, gmt.tm_mon+1, gmt.tm_mday, &mjd, &rv);
     if (rv!=0) { return(HASHPIPE_ERR_GEN); }
 
     if (stt_imjd!=NULL) { *stt_imjd = (int)mjd; }
-    if (stt_smjd!=NULL) { *stt_smjd = gmt.tm_hour*3600 + gmt.tm_min*60 
+    if (stt_smjd!=NULL) { *stt_smjd = gmt.tm_hour*3600 + gmt.tm_min*60
         + gmt.tm_sec; }
-    if (stt_offs!=NULL) { *stt_offs = tv.tv_usec*1e-6; }
+    if (stt_offs!=NULL) { *stt_offs = ts->tv_nsec*1e-9; }
 
     return(HASHPIPE_OK);
 }
 
-int datetime_from_mjd(long double MJD, int *YYYY, int *MM, int *DD, 
+int get_mjd_from_timeval(const struct timeval * tv,
+    int *stt_imjd, int *stt_smjd, double *stt_offs)
+{
+    int rv;
+    struct tm gmt;
+    double mjd;
+
+    if (gmtime_r(&tv->tv_sec, &gmt)==NULL) { return(HASHPIPE_ERR_SYS); }
+
+    slaCaldj(gmt.tm_year+1900, gmt.tm_mon+1, gmt.tm_mday, &mjd, &rv);
+    if (rv!=0) { return(HASHPIPE_ERR_GEN); }
+
+    if (stt_imjd!=NULL) { *stt_imjd = (int)mjd; }
+    if (stt_smjd!=NULL) { *stt_smjd = gmt.tm_hour*3600 + gmt.tm_min*60
+        + gmt.tm_sec; }
+    if (stt_offs!=NULL) { *stt_offs = tv->tv_usec*1e-6; }
+
+    return(HASHPIPE_OK);
+}
+
+int get_current_mjd(int *stt_imjd, int *stt_smjd, double *stt_offs)
+{
+    int rv;
+    struct timeval tv;
+
+    rv = gettimeofday(&tv,NULL);
+    if (rv) { return(HASHPIPE_ERR_SYS); }
+    return get_mjd_from_timeval(&tv, stt_imjd, stt_smjd, stt_offs);
+}
+
+int datetime_from_mjd(long double MJD, int *YYYY, int *MM, int *DD,
                       int *h, int *m, double *s) {
     int err;
     double fracday;
-    
+
     slaDjcl(MJD, YYYY, MM, DD, &fracday, &err);
     if (err == -1) { return(HASHPIPE_ERR_GEN); }
     fracday *= 24.0;  // hours

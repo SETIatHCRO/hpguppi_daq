@@ -308,6 +308,177 @@ void hpguppi_udp_packet_data_copy_transpose_from_payload(char *databuf, int ncha
 #endif
 }
 
+void hpguppi_s6_packet_data_copy_from_payload(char *databuf, int block_chan,
+        unsigned block_time, unsigned obsnchan,
+        const char *payload, size_t payload_size)
+{
+    const size_t bytes_per_sample = 4; // Xr,Xi,Yr,Yi
+    // -16 for S6 header and footer bytes
+    const unsigned chan_per_packet = (payload_size - 16) / bytes_per_sample;
+    unsigned ichan;
+
+#if 0
+    hashpipe_warn("hpguppi_s6_packet_data_copy_transpose_from_payload",
+            "databuf %lp block_chan %d block_time %d ntime_per_block %d payload_size %d",
+            databuf, block_chan, block_time, ntime_per_block, payload_size);
+#endif // 0
+
+#ifndef DEBUG_S6_COPY
+    const uint64_t *iptr = (const uint64_t *)(payload + 8);
+#endif // DEBUG_S6_COPY
+
+    uint64_t *optr = (uint64_t *)(databuf
+                   + block_time * obsnchan * bytes_per_sample
+                   + block_chan * bytes_per_sample);
+
+    // Arrange data from network packet format e.g:
+    //
+    // X0r|X0i|X1r|X1i|Y0r|Y0i|Y1r|Y1i  == [SsC0P0, SsC1P0, SsC0P1, SsC1P1]
+    // X2r|X2i|X3r|X3i|Y2r|Y2i|Y3r|Y3i  == [SsC2P0, SsC3P0, SsC2P1, SsC3P1]
+    // ...
+
+    // Into the format:
+    //
+    // S0C0P01, S0C1P01, S0C2P01, ... S0CnP01
+    // S1C0P01, S1C1P01, S1C2P01, ... S1CnP01
+    // S2C0P01, S2C1P01, S2C2P01, ... S2CnP01
+    // S3C0P01, S3C1P01, S3C2P01, ... S3CnP01
+    /// ...
+
+#if 0
+    memcpy(optr, iptr, payload_size - 16);
+#else
+    // Unpack the unusual X0 X1 Y0 Y1 order into the normal X0 Y0 X1 Y1 order.
+    // This code is specific to little endian systems.  To make it more general,
+    // should use be64toh and htobe64.
+    for (ichan=0; ichan<chan_per_packet/2; ++ichan)
+    {
+        // In mem: 00 11 22 33 44 55 66 77
+        // In reg: 77 66 55 44 33 22 11 00
+        uint64_t d = *iptr++;
+
+        // In reg: 77 66 33 22 55 44 11 00
+        // In mem: 00 11 44 55 22 33 66 77
+        *optr++ = ((d    ) & 0xffff00000000ffff)
+                | ((d<<16) & 0x0000ffff00000000)
+                | ((d>>16) & 0x00000000ffff0000);
+    }
+#endif
+}
+
+void hpguppi_s6_packet_data_copy_transpose_from_payload(char *databuf, int block_chan,
+        unsigned block_time, unsigned ntime_per_block,
+        const char *payload, size_t payload_size)
+{
+    const size_t bytes_per_sample = 4; // Xr,Xi,Yr,Yi
+    // -16 for S6 header and footer bytes
+    const unsigned chan_per_packet = (payload_size - 16) / bytes_per_sample;
+
+#if 0
+    hashpipe_warn("hpguppi_s6_packet_data_copy_from_payload",
+            "databuf %lp block_chan %d block_time %d ntime_per_block %d payload_size %d",
+            databuf, block_chan, block_time, ntime_per_block, payload_size);
+#endif // 0
+
+#ifndef DEBUG_S6_COPY
+    const uint64_t *iptr = (const uint64_t *)(payload + 8);
+#endif // DEBUG_S6_COPY
+
+    uint32_t *optr = (uint32_t *)(databuf
+                   + block_chan * ntime_per_block * bytes_per_sample
+                   + block_time * bytes_per_sample);
+
+    unsigned ichan;
+
+    // Arrange data from network packet format e.g:
+    // X0r|X0i|X1r|X1i|Y0r|Y0i|Y1r|Y1i
+    // X2r|X2i|X3r|X3i|Y2r|Y2i|Y3r|Y3i
+    // ...
+
+    // Into the format:
+    // S0C0P01, S1C0P01, S2C0P01, ... SmC0P01
+    // S0C1P01, S1C1P01, S2C1P01, ... SmC1P01
+    // S0C2P01, S1C2P01, S2C2P01, ... SmC1P01
+    // S0C3P01, S1C3P01, S2C3P01, ... SmC1P01
+    /// ...
+
+    for (ichan=0; ichan<chan_per_packet/2; ++ichan)
+    {
+#ifndef DEBUG_S6_COPY
+        uint64_t d = *iptr++;
+        *optr = ((d>>32) & 0xffff0000)
+              | ((d>>16) & 0x0000ffff);
+#else
+        // Store lower 16 bits of block time and channel number packed as two
+        // big endian 16 bit values.  This is intended to facilitate debugging
+        // via dumping the data buffers.
+        *optr = htonl(
+                  ((block_time & 0xffff) << 16) | (block_chan + 2*ichan)
+                );
+#endif // DEBUG_S6_COPY
+        optr += (ntime_per_block * bytes_per_sample) / sizeof(uint32_t);
+#ifndef DEBUG_S6_COPY
+        *optr = ((d>>16) & 0xffff0000)
+              | ((d    ) & 0x0000ffff);
+#else
+        // Store lower 16 bits of block time and channel number packed as two
+        // big endian 16 bit values.  This is intended to facilitate debugging
+        // via dumping the data buffers.
+        *optr = htonl(
+                  ((block_time & 0xffff) << 16) | (block_chan + 2*ichan + 1)
+                );
+#endif // DEBUG_S6_COPY
+        optr += (ntime_per_block * bytes_per_sample) / sizeof(uint32_t);
+    }
+}
+
+void hpguppi_s6mb_packet_data_copy_from_payload(char *databuf, int block_chan,
+        unsigned block_time, unsigned ntime_per_block,
+        const char *payload, size_t payload_size)
+{
+    const size_t bytes_per_sample = 4; // Xr,Xi,Yr,Yi
+    const unsigned chan_per_packet = 4;
+    const unsigned time_per_packet = 512;
+    unsigned ichan;
+
+    const char *iptr = (payload + 8);
+    const uint64_t istride = time_per_packet * bytes_per_sample;
+
+    char *optr = (databuf
+                   + block_chan * ntime_per_block * bytes_per_sample
+                   + block_time * bytes_per_sample);
+    const uint64_t ostride = ntime_per_block * bytes_per_sample;
+
+    // Copy data from network packet format e.g:
+    //
+    // T000X0r|T000X0i|T000Y0r|T000Y0i|T001X0r|T001X0i|T001Y0r|T001Y0i
+    // T002X0r|T002X0i|T002Y0r|T002Y0i|T003X0r|T003X0i|T003Y0r|T003Y0i
+    // ...
+    // T510X0r|T510X0i|T510Y0r|T510Y0i|T511X0r|T511X0i|T511Y0r|T511Y0i
+    // T000X1r|T000X1i|T000Y1r|T000Y1i|T001X1r|T001X1i|T001Y1r|T001Y1i
+    // T002X1r|T002X1i|T002Y1r|T002Y1i|T003X1r|T003X1i|T003Y1r|T003Y1i
+    // ...
+    // T510X1r|T510X1i|T510Y1r|T510Y1i|T511X1r|T511X1i|T511Y1r|T511Y1i
+    // T000X2r|T000X2i|T000Y2r|T000Y2i|T001X2r|T001X2i|T001Y2r|T001Y2i
+    // T002X2r|T002X2i|T002Y2r|T002Y2i|T003X2r|T003X2i|T003Y2r|T003Y2i
+    // ...
+    // T510X2r|T510X2i|T510Y2r|T510Y2i|T511X2r|T511X2i|T511Y2r|T511Y2i
+    // T000X3r|T000X3i|T000Y3r|T000Y3i|T001X3r|T001X3i|T001Y3r|T001Y3i
+    // T002X3r|T002X3i|T002Y3r|T002Y3i|T003X3r|T003X3i|T003Y3r|T003Y3i
+    // ...
+    // T510X3r|T510X3i|T510Y3r|T510Y3i|T511X3r|T511X3i|T511Y3r|T511Y3i
+
+    // Unpack the unusual X0 X1 Y0 Y1 order into the normal X0 Y0 X1 Y1 order.
+    // This code is specific to little endian systems.  To make it more general,
+    // should use be64toh and htobe64.
+    for (ichan=0; ichan<chan_per_packet; ++ichan)
+    {
+      memcpy(optr, iptr, istride);
+      iptr += istride;
+      optr += ostride;
+    }
+}
+
 size_t parkes_udp_packet_datasize(size_t packet_size) {
     return(packet_size - sizeof(unsigned long long));
 }

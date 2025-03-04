@@ -45,6 +45,14 @@
         }                                                               \
     }
 
+#define get_uint(key, param, def) {                                      \
+        if (hgetu4(buf, (key), &(param))==0) {                          \
+            if (DEBUGOUT)                                               \
+                printf("Warning:  %s not in status shm!\n", (key));     \
+            (param) = (def);                                            \
+        }                                                               \
+    }
+
 #define get_lon(key, param, def) {                                      \
         {                                                               \
             double dtmp;                                                \
@@ -77,7 +85,7 @@
 
 
 #if 0
-// Return the beam FWHM in degrees for obs_freq in MHz 
+// Return the beam FWHM in degrees for obs_freq in MHz
 // and dish_diam in m
 double beam_FWHM(double obs_freq, double dish_diam)
 {
@@ -88,8 +96,8 @@ double beam_FWHM(double obs_freq, double dish_diam)
 
 
 // Any GB-specific derived parameters go here
-static void set_obs_params_gb(char *buf, 
-                              struct hpguppi_params *g, 
+static void set_obs_params_gb(char *buf,
+                              struct hpguppi_params *g,
                               struct psrfits *p) {
 
     // TODO could double-check telescope name first
@@ -98,14 +106,14 @@ static void set_obs_params_gb(char *buf,
     get_dbl("FD_SANG", p->hdr.fd_sang, 45.0);
     get_dbl("FD_XYPH", p->hdr.fd_xyph, 0.0);
     get_int("BE_PHASE", p->hdr.be_phase, -1);
-    get_dbl("BEAMFWHM", p->hdr.beam_FWHM, 65.0);  
+    get_dbl("BEAMFWHM", p->hdr.beam_FWHM, 65.0);
 }
 
 // Read networking parameters
 void hpguppi_read_net_params(char *buf, struct hashpipe_udp_params *u) {
-    get_str("DATAHOST", u->sender, 80, "bee2-10");
+    get_str("DATAHOST", u->sender, sizeof(u->sender), "bee2-10");
     get_int("DATAPORT", u->port, 50000);
-    get_str("PKTFMT", u->packet_format, 32, "GUPPI");
+    get_str("PKTFMT", u->packet_format, sizeof(u->packet_format), "GUPPI");
     if (strncmp(u->packet_format, "PARKES", 6)==0)
         u->packet_size = 2056;
     else if (strncmp(u->packet_format, "1SFA", 4)==0)
@@ -125,6 +133,8 @@ void hpguppi_read_pktsock_params(char *buf, struct hpguppi_pktsock_params *p)
 {
     get_str("BINDHOST", p->ifname, 80, "eth4");
     get_int("BINDPORT", p->port, 60000);
+    get_int("OBSSCHAN", p->obsschan, 0);
+    get_int("OBSNCHAN", p->obsnchan, 64);
     get_str("PKTFMT", p->packet_format, 32, "1SFA");
     if (strncmp(p->packet_format, "PARKES", 6)==0)
         p->packet_size = 2056;
@@ -134,6 +144,12 @@ void hpguppi_read_pktsock_params(char *buf, struct hpguppi_pktsock_params *p)
         p->packet_size = 4128;
     else if (strncmp(p->packet_format, "SHORT", 5)==0)
         p->packet_size = 544;
+    else if (strncmp(p->packet_format, "ATASNAPV", 8)==0){
+        int bitspersample;
+        get_int("NBITS", bitspersample, 4);
+        //               payload : complex4[nchan, 16, 2]      +  header 
+        p->packet_size = p->obsnchan*16*2*(bitspersample*2/8) + 16;
+    }
     else
         p->packet_size = 8208;
 }
@@ -146,20 +162,20 @@ void guppi_read_obs_mode(const char *buf, char *mode) {
 #endif // 0
 
 // Read a status buffer all of the key observation paramters
-void hpguppi_read_subint_params(char *buf, 
-                                struct hpguppi_params *g, 
+// Expectedly called after hpguppi_read_obs_params
+void hpguppi_read_subint_params(char *buf,
+                                struct hpguppi_params *g,
                                 struct psrfits *p)
 {
     // Parse packet size, # of packets, etc.
     get_lon("PKTIDX", g->packetindex, -1L);
-    get_int("PKTSIZE", g->packetsize, 0);
     get_int("NPKT", g->n_packets, 0);
     get_int("NDROP", g->n_dropped, 0);
     get_dbl("DROPAVG", g->drop_frac_avg, 0.0);
     get_dbl("DROPTOT", g->drop_frac_tot, 0.0);
-    get_int("BLOCSIZE", g->packets_per_block, 0);
-    if (g->packetsize>0)
-        g->packets_per_block /= g->packetsize;
+    if (g->packetsize==0)
+        get_int("PKTSIZE", g->packetsize, 0);
+
     if (g->n_packets>0)
         g->drop_frac = (double) g->n_dropped / (double) g->n_packets;
     else
@@ -181,19 +197,19 @@ void hpguppi_read_subint_params(char *buf,
     get_int("PFB_OVER", g->pfb_overlap, 4);
     get_int("CODD", g->coherent, 0);
 
-    // Check fold mode 
+    // Check fold mode
     int fold=0;
     if (strstr("PSR", p->hdr.obs_mode)!=NULL) { fold=1; }
     if (strstr("CAL", p->hdr.obs_mode)!=NULL) { fold=1; }
 
     // Fold-specifc stuff
     if (fold) {
-        get_dbl("TSUBINT", p->sub.tsubint, 0.0); 
-        get_dbl("OFFS_SUB", p->sub.offs, 0.0); 
+        get_dbl("TSUBINT", p->sub.tsubint, 0.0);
+        get_dbl("OFFS_SUB", p->sub.offs, 0.0);
         get_int("NPOLYCO", p->fold.n_polyco_sets, 0);
     } else {
         int bytes_per_dt = p->hdr.nchan * p->hdr.npol * p->hdr.nbits / 8;
-        p->sub.offs = p->hdr.dt * 
+        p->sub.offs = p->hdr.dt *
             (double)(g->packetindex * g->packetsize / bytes_per_dt)
             + 0.5 * p->sub.tsubint;
         p->fold.n_polyco_sets = 0;
@@ -212,7 +228,7 @@ void hpguppi_read_subint_params(char *buf,
     p->sub.feed_ang = 0.0;
     p->sub.pos_ang = 0.0;
     p->sub.par_ang = 0.0;
-    
+
     // Galactic coords
     slaEqgal(p->sub.ra*DEGTORAD, p->sub.dec*DEGTORAD,
              &p->sub.glon, &p->sub.glat);
@@ -222,8 +238,10 @@ void hpguppi_read_subint_params(char *buf,
 
 
 // Read a status buffer all of the key observation paramters
-void hpguppi_read_obs_params(char *buf, 
-                             struct hpguppi_params *g, 
+// Call once at observation start, then call lighter-weight 
+// hpguppi_read_subint_params
+void hpguppi_read_obs_params(char *buf,
+                             struct hpguppi_params *g,
                              struct psrfits *p)
 {
     char base[200], dir[200], banknam[64];
@@ -232,6 +250,16 @@ void hpguppi_read_obs_params(char *buf,
     get_int("DS_TIME", p->hdr.ds_time_fact, 1); // Time down-sampling
     get_int("DS_FREQ", p->hdr.ds_freq_fact, 1); // Freq down-sampling
     get_int("ONLY_I", p->hdr.onlyI, 0);         // Only output Stokes I
+
+    // PIPERBLK
+    get_int("PIPERBLK", g->packets_per_block, 0);
+    if (g->packets_per_block==0)
+    {
+        get_int("BLOCSIZE", g->packets_per_block, 0);
+        get_int("PKTSIZE", g->packetsize, 0);
+        if (g->packetsize>0)
+            g->packets_per_block /= g->packetsize;
+    }
 
     // Freq, BW, etc.
     get_dbl("OBSFREQ", p->hdr.fctr, 0.0);
@@ -289,17 +317,20 @@ void hpguppi_read_obs_params(char *buf,
     if (strstr("FOLD", p->hdr.obs_mode)!=NULL) { fold=1; }
     if (strstr("PSR", p->hdr.obs_mode)!=NULL) { fold=1; }
     if (strstr("CAL", p->hdr.obs_mode)!=NULL) { fold=1; }
-    if (fold) 
+    if (fold)
         p->hdr.nbin = p->fold.nbin;
-    else 
+    else
         p->hdr.nbin = 1;
 
     // Coherent dedispersion params
     get_int("CODD", g->coherent, 0);
-    get_lon("PKTSTART", g->start_pkt, 0);
+    get_lon("OBSSTART", g->start_pkt, -1);
+    if(g->start_pkt == -1){
+        get_lon("PKTSTART", g->start_pkt, 0);
+    }
     get_int("OVERLAP", p->dedisp.overlap, 0);
     get_dbl("CHAN_DM", p->hdr.chan_dm, 0.0);
-    
+
     { // Start time, MJD
         int mjd_d, mjd_s;
         double mjd_fs;
@@ -311,23 +342,22 @@ void hpguppi_read_obs_params(char *buf,
         p->hdr.start_day = mjd_d;
         p->hdr.start_sec = mjd_s + mjd_fs;
     }
-    
+
     // Set the base filename
     int i;
     char backend[24];
     strncpy(backend, p->hdr.backend, 24);
-    for (i=0; i<24; i++) { 
+    for (i=0; i<24; i++) {
         if (backend[i]=='\0') break;
-        backend[i] = tolower(backend[i]); 
+        backend[i] = tolower(backend[i]);
     }
-    if (strstr("CAL", p->hdr.obs_mode)!=NULL) { 
+    if (strstr("CAL", p->hdr.obs_mode)!=NULL) {
         sprintf(base, "%s_%05d_%s_%04d_cal", backend, p->hdr.start_day,
                 p->hdr.source, p->hdr.scan_number);
     } else {
-        // TODO don't hardcode the 16384 value for packets_per_block.
         // base is BACKEND_MJD_SEC_BLK_SRC_SCAN.
         sprintf(base, "%s_%05d_%05d_%06lld_%s_%04d", backend,
-                p->hdr.start_day, (int)(p->hdr.start_sec), g->start_pkt/16384,
+                p->hdr.start_day, (int)(p->hdr.start_sec), g->start_pkt/g->packets_per_block,
                 p->hdr.source, p->hdr.scan_number);
     }
 #ifdef NO_PROJECT_DIR
@@ -336,27 +366,33 @@ void hpguppi_read_obs_params(char *buf,
     // Use a $DATADIR/$PROJID/$BACKEND/$BANK prefix for files
     if (strnlen(banknam, sizeof(banknam)) < 1)
         snprintf(banknam, sizeof(banknam), ".");
-    sprintf(p->basefilename, "%s/%s/%s%s/%c/%s", dir, p->hdr.project_id, 
-            p->hdr.backend, g->coherent ? "_CODD" : "", 
+    sprintf(p->basefilename, "%.72s/%s/%s%s/%c/%.71s", dir, p->hdr.project_id,
+            p->hdr.backend, g->coherent ? "_CODD" : "",
             banknam[strnlen(banknam, sizeof(banknam))-1], base);
 #endif
     { // Date and time of start
-        int YYYY, MM, DD, h, m;
-        double s;
+        int YYYY, MM, DD, h, m, s_integ_int, s_frac_int;
+        double s, s_integ, s_frac;
         datetime_from_mjd(p->hdr.MJD_epoch, &YYYY, &MM, &DD, &h, &m, &s);
-        sprintf(p->hdr.date_obs, "%04d-%02d-%02dT%02d:%02d:%06.3f", 
-                YYYY, MM, DD, h, m, s);
+        s_frac = modf(s, &s_integ);
+        s_integ_int = abs((int)s_integ);
+        s_frac_int = abs((int)(s_frac*1000));
+        #pragma GCC diagnostic push
+        #pragma GCC diagnostic ignored "-Wformat-overflow="
+        sprintf(p->hdr.date_obs, "%04d-%02d-%02dT%02d:%02d:%02d.%03d",
+                YYYY % 10000, MM % 100, DD % 100, h % 24, m % 60, s_integ_int % 100, s_frac_int % 1000);
+        #pragma GCC diagnostic pop
     }
 
     // TODO: call telescope-specific settings here
     // Eventually make this depend on telescope name
     set_obs_params_gb(buf, g, p);
-    
+
     // Now bookkeeping information
     {
         int ii, jj, kk;
         int bytes_per_dt = p->hdr.nchan * p->hdr.npol * p->hdr.nbits / 8;
-        char key[10];
+        char key[17];
         double offset, scale, dtmp;
         long long max_bytes_per_file;
 
@@ -364,10 +400,10 @@ void hpguppi_read_obs_params(char *buf,
         p->hdr.nsblk = p->sub.bytes_per_subint / bytes_per_dt;
         p->sub.FITS_typecode = TBYTE;
         p->sub.tsubint = p->hdr.nsblk * p->hdr.dt;
-        if (fold) { 
+        if (fold) {
             //p->hdr.nsblk = 1;
             p->sub.FITS_typecode = TFLOAT;
-            get_dbl("TSUBINT", p->sub.tsubint, 0.0); 
+            get_dbl("TSUBINT", p->sub.tsubint, 0.0);
             p->sub.bytes_per_subint = sizeof(float) * p->hdr.nbin *
                 p->hdr.nchan * p->hdr.npol;
             //max_bytes_per_file = PSRFITS_MAXFILELEN_FOLD * 1073741824L;
@@ -378,7 +414,7 @@ void hpguppi_read_obs_params(char *buf,
         // Will probably want to tweak this so that it is a nice round number
         if (p->sub.bytes_per_subint!=0)
             p->rows_per_file = p->hdr.ds_freq_fact * p->hdr.ds_time_fact *
-                (p->hdr.onlyI ? 4 : 1) * max_bytes_per_file / 
+                (p->hdr.onlyI ? 4 : 1) * max_bytes_per_file /
                 p->sub.bytes_per_subint;
 
         // Free the old ones in case we've changed the params
@@ -402,10 +438,10 @@ void hpguppi_read_obs_params(char *buf,
         // because of how power is split between them
         // XXX this needs to be changed for coherent dedisp..
         //p->sub.dat_weights[0] = 0.0;
-        
-        p->sub.dat_offsets = (float *)malloc(sizeof(float) *  
+
+        p->sub.dat_offsets = (float *)malloc(sizeof(float) *
                                              p->hdr.nchan * p->hdr.npol);
-        p->sub.dat_scales = (float *)malloc(sizeof(float) *  
+        p->sub.dat_scales = (float *)malloc(sizeof(float) *
                                             p->hdr.nchan * p->hdr.npol);
         for (ii = 0 ; ii < p->hdr.npol ; ii++) {
             sprintf(key, "OFFSET%d", ii);
@@ -418,7 +454,7 @@ void hpguppi_read_obs_params(char *buf,
             }
         }
     }
-    
+
     // Read information that is appropriate for the subints
     hpguppi_read_subint_params(buf, g, p);
     p->hdr.azimuth = p->sub.tel_az;
@@ -447,4 +483,32 @@ int hpguppi_read_directio_mode(char *buf)
     int directio = 0;
     get_int("DIRECTIO", directio, 0);
     return directio;
+}
+
+// Read PIPERBLK.  PIPERBLK is the amount PKTIDX increments per block.
+// If zero or missing, it must be inferred from the change in PKTIDX from one
+// block to the next.
+unsigned int hpguppi_read_piperblk(char *buf)
+{
+    int piperblk = 0;
+    get_int("PIPERBLK", piperblk, 0);
+    return piperblk;
+}
+
+// Calculate the largest power of two number of time samples that fit in
+// max_block_size block size for a given number of channels.
+int calc_ntime_per_block(int max_block_size, int obsnchan)
+{
+    int ntime_per_block = max_block_size / (4 * obsnchan);
+
+    // Set ntime_per_block to closest power of 2 less than or equal to
+    // ntime_per_block.
+    unsigned int i = 0;
+    while(ntime_per_block != 1) {
+        ntime_per_block >>= 1;
+        i++;
+    }
+    ntime_per_block <<= i;
+
+    return ntime_per_block;
 }

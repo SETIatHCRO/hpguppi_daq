@@ -50,6 +50,12 @@ struct hpguppi_pktsock_params {
     int port;         /* UDP receive port */
     size_t packet_size;     /* Expected packet size, 0 = don't care */
     char packet_format[32]; /* Packet format */
+    // obsschan is the first coarse channel for this instance.
+    // obsnchan is the total number of channels (per beam) for this instance.
+    // In "mb1" mode, the `obsnchan` channels are split across 8 packets.
+    int obsschan; /* First coarse channel of this instance */
+    int obsnchan; /* Total number of coarse channels for this instance */
+    int chperpkt; /* Total number of coarse channels per packet */
 
     // Holds packet socket details
     struct hashpipe_pktsock ps;
@@ -65,4 +71,13 @@ void hpguppi_read_pktsock_params(char *buf, struct hpguppi_pktsock_params *p);
 // use Direct I/O.  Undefined or zero or non-numeric means do NOT use Direct
 // I/O.
 int hpguppi_read_directio_mode(char *buf);
+
+// Read PIPERBLK.  PIPERBLK is the amount PKTIDX increments per block.
+// If zero or missing, it must be inferred from the change in PKTIDX from one
+// block to the next.
+unsigned int hpguppi_read_piperblk(char *buf);
+
+// Calculate the largest power of two number of time samples that fit in
+// max_block_size block size for a given number of channels.
+int calc_ntime_per_block(int max_block_size, int obsnchan);
 #endif
