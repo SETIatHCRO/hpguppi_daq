@@ -4,6 +4,7 @@
 #define BLADE_ATA_MODE_A 0
 #define BLADE_ATA_MODE_B 1
 #define BLADE_ATA_MODE_H 2
+#define BLADE_ATA_MODE_X 3
 
 #define BLADE_ATA_MODE BLADE_ATA_MODE_H
 
@@ -121,6 +122,44 @@
 #define blade_ata_compute_step blade_ata_h_compute_step
 
 #endif // BLADE_ATA_MODE_H
+
+#if BLADE_ATA_MODE == BLADE_ATA_MODE_X
+#include "hpguppi_blade_ata_mode_x_config.h"
+#include "hpguppi_blade_ata_mode_x_capi.h"
+
+#define BLADE_ATA_CONFIG BLADE_ATA_MODE_X_CONFIG
+#define BLADE_BLOCK_OUTPUT_DATA_SIZE BLADE_ATA_MODE_X_OUTPUT_DATA_SIZE
+#define BLADE_BLOCK_DATA_SIZE BLADE_ATA_MODE_X_DATA_SIZE
+#define BLADE_ATA_OUTPUT_ELEMENT_BYTES BLADE_ATA_MODE_X_OUTPUT_NCOMPLEX_BYTES
+#define BLADE_ATA_INPUT_NANT BLADE_ATA_MODE_X_INPUT_NANT
+#define BLADE_ATA_OUTPUT_NBEAM BLADE_ATA_MODE_X_OUTPUT_NBEAM
+#define BLADE_ATA_OUTPUT_INCOHERENT_BEAM false
+
+#define BLADE_ATA_OUTPUT_NBITS BLADE_ATA_MODE_X_OUTPUT_NCOMPLEX_BYTES*8/2
+#define BLADE_ATA_OUTPUT_SAMPLE_TYPE "CF32"
+
+#define blade_ata_initialize blade_ata_x_initialize
+#define blade_ata_get_output_size blade_ata_x_get_output_size
+
+#define blade_ata_terminate blade_ata_x_terminate
+
+#define blade_ata_set_block_time_mjd blade_ata_x_set_block_time_mjd
+#define blade_ata_set_block_dut1 blade_ata_x_set_block_dut1
+
+#define blade_ata_register_user_data blade_ata_x_register_user_data
+#define blade_ata_register_input_buffer_prefetch_cb blade_ata_x_register_input_buffer_prefetch_cb
+#define blade_ata_register_input_buffer_fetch_cb blade_ata_x_register_input_buffer_fetch_cb
+#define blade_ata_register_input_buffer_enqueued_cb blade_ata_x_register_input_buffer_enqueued_cb
+#define blade_ata_register_input_buffer_ready_cb blade_ata_x_register_input_buffer_ready_cb
+#define blade_ata_register_output_buffer_fetch_cb blade_ata_x_register_output_buffer_fetch_cb
+#define blade_ata_register_output_buffer_ready_cb blade_ata_x_register_output_buffer_ready_cb
+
+#define blade_ata_register_blade_queued_input_clear_cb blade_ata_x_register_blade_queued_input_clear_cb
+#define blade_ata_register_blade_queued_output_clear_cb blade_ata_x_register_blade_queued_output_clear_cb
+
+#define blade_ata_compute_step blade_ata_x_compute_step
+
+#endif // BLADE_ATA_MODE_X
 
 
 #endif // _HPGUPPI_ATA_BLADE_MODE_H_

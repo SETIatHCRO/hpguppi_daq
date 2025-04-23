@@ -46,14 +46,19 @@ static int safe_close(UVH5_file_t* uvh5_file) {
 
 static void *run(hashpipe_thread_args_t * args)
 {
-    // Local aliases to shorten access to args fields
-    // Our output buffer happens to be a hpguppi_xgpu_output_databuf
-
-  hpguppi_output_xgpu_databuf_t* indb = (hpguppi_output_xgpu_databuf_t *) args->ibuf;
-
+  // Local aliases to shorten access to args fields
   hashpipe_status_t* st = &(args->st);
   const char* status_key = args->thread_desc->skey;
   const char* thread_name = args->thread_desc->name;
+  // // Our output buffer happens to be a hpguppi_xgpu_output_databuf
+  // hpguppi_output_xgpu_databuf_t* indb = (hpguppi_output_xgpu_databuf_t *) args->ibuf;
+
+  // The output buffer is generic
+  hpguppi_databuf_t *indb  = (hpguppi_databuf_t *)hpguppi_databuf_attach_retry(args->instance_id, args->input_buffer);
+  if(!indb) {
+    hashpipe_error(thread_name, "Could not attach to input databuf #(%d).", args->input_buffer);
+    return THREAD_ERROR;
+  }
 
   /* Read in general parameters */
   struct hpguppi_params gp;
@@ -209,8 +214,13 @@ static void *run(hashpipe_thread_args_t * args)
       case IDLE:// If should IDLE,
         if(state != IDLE){
           if(state == RECORD){//and recording, finalise block
+            hashpipe_info(thread_name, "Recording ended...");
             // If file open, close it
             if(uvh5_file.file_id) {
+              #ifdef BLADE_CORRELATOR
+                // this buffer gets freed...
+                uvh5_file.visdata = malloc(8);
+              #endif
               // Close file
               free(uvh5_header->object_name);
               UVH5close(&uvh5_file);
@@ -338,6 +348,23 @@ static void *run(hashpipe_thread_args_t * args)
           }
 
           UVH5parse_input_map(uvh5_header, inputpairs);
+          #ifdef BLADE_CORRELATOR
+          // BLADE does not group the auto-baselines first
+          int bl_index = 0;
+          for(int a0 = 0; a0 < nants; a0++) {
+            int ant_1_num = uvh5_header->antenna_numbers[
+              UVH5find_antenna_index_by_name(uvh5_header, inputpairs[a0*2].antenna)
+            ];
+            for(int a1 = a0; a1 < nants; a1++) {
+              int ant_2_num = uvh5_header->antenna_numbers[
+                UVH5find_antenna_index_by_name(uvh5_header, inputpairs[a1*2].antenna)
+              ];
+              uvh5_header->ant_1_array[bl_index] = ant_1_num;
+              uvh5_header->ant_2_array[bl_index] = ant_2_num;
+              bl_index++;
+            } 
+          }
+          #endif
           UVH5Hadmin(uvh5_header);
           
           for(i = 0; i < nants*npols; i++) {
@@ -379,6 +406,7 @@ static void *run(hashpipe_thread_args_t * args)
           dut1 = 0.0;
           hgetr8(datablock_header, "DUT1", &dut1); // single DUT1 value for all observation time
           hgetr8(datablock_header, "XTIMEINT", &tau); // calculated in xgpu_thread from tbin*nsamperblk*blks_per_integration
+          hashpipe_info(thread_name, "tau: %f", tau);
           hashpipe_info(thread_name, "DUT1: %f", dut1);
 
           // uvh5_header->lst_array = malloc(sizeof(double) * uvh5_header->Nbls);
@@ -433,10 +461,15 @@ static void *run(hashpipe_thread_args_t * args)
             break;
           }
         }
-        #ifdef XGPU_INTEGRATE_AS_CF64_ON_CPU
-        UVH5open(fname, &uvh5_file, UVH5TcreateCF64());
+        #ifdef BLADE_CORRELATOR
+        hashpipe_info(thread_name, "BLADE_CORRELATOR: open CF32");
+        UVH5open(fname, &uvh5_file, UVH5TcreateCF32());
         #else
-        UVH5open(fname, &uvh5_file, UVH5TcreateCI32());
+          #ifdef XGPU_INTEGRATE_AS_CF64_ON_CPU
+          UVH5open(fname, &uvh5_file, UVH5TcreateCF64());
+          #else
+          UVH5open(fname, &uvh5_file, UVH5TcreateCI32());
+          #endif
         #endif
         // if () {
         //   hashpipe_error(thread_name, "Error opening file.");
@@ -455,20 +488,26 @@ static void *run(hashpipe_thread_args_t * args)
         }
 
         // memset(uvh5_file.visdata, 1, uvh5_header->Nbls*uvh5_header->Npols*uvh5_header->Nfreqs);
-        #ifdef XGPU_INTEGRATE_AS_CF64_ON_CPU
-        UVH5visdata_from_xgpu_double_output(
-          (UVH5_CF64_t*) hpguppi_databuf_data(indb, curblock_in),
-          (UVH5_CF64_t*) uvh5_file.visdata,
-          xgpu_output_elements,
-          &uvh5_file.header
-        );
+        #ifdef BLADE_CORRELATOR
+        // BLADE already outputs [baseline, freq, antpol_prod] order!
+        // hashpipe_info(thread_name, "BLADE correlation, direct visdata order.");
+        uvh5_file.visdata = (UVH5_CF32_t*) hpguppi_databuf_data(indb, curblock_in);
         #else
-        UVH5visdata_from_xgpu_int_output(
-          (UVH5_CI32_t*) hpguppi_databuf_data(indb, curblock_in),
-          (UVH5_CI32_t*) uvh5_file.visdata,
-          xgpu_output_elements,
-          &uvh5_file.header
-        );
+          #ifdef XGPU_INTEGRATE_AS_CF64_ON_CPU
+          UVH5visdata_from_xgpu_double_output(
+            (UVH5_CF64_t*) hpguppi_databuf_data(indb, curblock_in),
+            (UVH5_CF64_t*) uvh5_file.visdata,
+            xgpu_output_elements,
+            &uvh5_file.header
+          );
+          #else
+          UVH5visdata_from_xgpu_int_output(
+            (UVH5_CI32_t*) hpguppi_databuf_data(indb, curblock_in),
+            (UVH5_CI32_t*) uvh5_file.visdata,
+            xgpu_output_elements,
+            &uvh5_file.header
+          );
+          #endif
         #endif
 
         uvh5_header->time_array[0] += + tau/RADIOINTERFEROMETERY_DAYSEC;
@@ -572,13 +611,13 @@ static hashpipe_thread_desc_t obs_uvh5disk_thread = {
     skey: "OBSSTAT",
     init: NULL,
     run:  run,
-    ibuf_desc: {hpguppi_output_xgpu_databuf_create},
+    ibuf_desc: {NULL},
     obuf_desc: {NULL}
 };
-
+ 
 static __attribute__((constructor)) void ctor()
 {
   register_hashpipe_thread(&obs_uvh5disk_thread);
 }
-
+ 
 // vi: set ts=8 sw=4 et :

@@ -16,6 +16,14 @@
 #include "radiointerferometryc99.h"
 #include "antenna_weights.h"
 
+enum blade_mode_t {
+  BLADE_MODE_UNKNOWN,
+  BLADE_MODE_A,
+  BLADE_MODE_B,
+  BLADE_MODE_H,
+  BLADE_MODE_X
+};
+
 typedef struct {
     const int blade_number_of_workers;
 
@@ -47,7 +55,10 @@ typedef struct {
 
     uint64_t fill_to_free_moving_sum_ns;
     uint64_t fill_to_free_block_ns[N_BLADE_OUTPUT_BLOCKS];
-    struct timespec ts_blocks_recvd[N_BLADE_OUTPUT_BLOCKS];
+    struct timespec ts_blocks_recvd[N_INPUT_BLOCKS];
+
+    enum blade_mode_t mode;
+    void* mode_config;
 } blade_userdata_t;
 
 double jd_mid_block(char* databuf_header) {
@@ -177,28 +188,28 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
       indb_data_dims_good_flag = 0;
       if (user_data->prev_flagged_NANTS != input_buffer_dim_NANTS) {
         user_data->prev_flagged_NANTS = input_buffer_dim_NANTS;
-        hashpipe_error(user_data->thread_name, "\nIncoming data_buffer has NANTS %lu != %lu. Ignored.\n", input_buffer_dim_NANTS, BLADE_ATA_CONFIG.inputDims.NANTS);
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NANTS %lu != %lu. Ignored.\n", input_buffer_dim_NANTS, BLADE_ATA_CONFIG.inputDims.NANTS);
       }
     }
     else if (input_buffer_dim_NCHAN != BLADE_ATA_CONFIG.inputDims.NCHANS) {
       indb_data_dims_good_flag = 0;
       if (user_data->prev_flagged_NCHAN != input_buffer_dim_NCHAN) {
         user_data->prev_flagged_NCHAN = input_buffer_dim_NCHAN;
-        hashpipe_error(user_data->thread_name, "\nIncoming data_buffer has NCHANS %lu != %lu. Ignored.\n", input_buffer_dim_NCHAN, BLADE_ATA_CONFIG.inputDims.NCHANS);
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NCHANS %lu != %lu. Ignored.\n", input_buffer_dim_NCHAN, BLADE_ATA_CONFIG.inputDims.NCHANS);
       }
     }
     else if (input_buffer_dim_NTIME != BLADE_ATA_CONFIG.inputDims.NTIME) {
       indb_data_dims_good_flag = 0;
       if (user_data->prev_flagged_NTIME != input_buffer_dim_NTIME) {
         user_data->prev_flagged_NTIME = input_buffer_dim_NTIME;
-        hashpipe_error(user_data->thread_name, "\nIncoming data_buffer has NTIME %lu != %lu. Ignored.\n", input_buffer_dim_NTIME, BLADE_ATA_CONFIG.inputDims.NTIME);
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NTIME %lu != %lu. Ignored.\n", input_buffer_dim_NTIME, BLADE_ATA_CONFIG.inputDims.NTIME);
       }
     }
     else if (input_buffer_dim_NPOLS != BLADE_ATA_CONFIG.inputDims.NPOLS) {
       indb_data_dims_good_flag = 0;
       if (user_data->prev_flagged_NPOLS != input_buffer_dim_NPOLS) {
         user_data->prev_flagged_NPOLS = input_buffer_dim_NPOLS;
-        hashpipe_error(user_data->thread_name, "\nIncoming data_buffer has NPOLS %lu != %lu. Ignored.\n", input_buffer_dim_NPOLS, BLADE_ATA_CONFIG.inputDims.NPOLS);
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NPOLS %lu != %lu. Ignored.\n", input_buffer_dim_NPOLS, BLADE_ATA_CONFIG.inputDims.NPOLS);
       }
     }
 
@@ -216,9 +227,10 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
   }
 
   {// re-setup if a new observation
-    int64_t pktidx_obs_start, pktidx_blk_start, pktidx, pktidx_blk_stop;
+    int64_t pktidx_obs_start, pktidx_obs_stop, pktidx_blk_start, pktidx, pktidx_blk_stop;
     hgeti8(databuf_header, "PKTIDX", &pktidx);
     hgeti8(databuf_header, "PKTSTART", &pktidx_obs_start);
+    hgeti8(databuf_header, "PKTSTOP", &pktidx_obs_stop);
     hgeti8(databuf_header, "BLKSTART", &pktidx_blk_start);
     hgeti8(databuf_header, "BLKSTOP", &pktidx_blk_stop);
     user_data->prev_filled_pktidx = ~0;
@@ -226,6 +238,7 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
     // if first block of observation
     if (pktidx_obs_start != user_data->prev_pktidx_obs_start && pktidx_obs_start >= pktidx_blk_start) {
       UVH5_header_t uvh5_header = {0};
+      char blade_mode;
       char tel_info_toml_filepath[70] = {'\0'};
       // char obs_info_toml_filepath[70] = {'\0'};
       char reference_antenna_name[70] = {'\0'};
@@ -265,10 +278,119 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
 
       hashpipe_status_lock_safe(user_data->status);
       {
+        hgets(user_data->status->buf, "BLADEMOD", 1, &blade_mode);
         hgets(user_data->status->buf, "TELINFOP", 70, tel_info_toml_filepath);
         hgets(user_data->status->buf, "REFANTNM", 70, reference_antenna_name);
         // hgets(user_data->status->buf, "OBSINFOP", 70, obs_info_toml_filepath);
         hgets(user_data->status->buf, "CALWGHTP", 70, obs_antenna_calibration_filepath);
+
+        enum blade_mode_t blade_mode_next;
+        switch (blade_mode) {
+          case 'A':
+            blade_mode_next = BLADE_MODE_A;
+            hashpipe_info(user_data->thread_name, "Next mode: A");
+            break;
+          case 'B':
+            blade_mode_next = BLADE_MODE_B;
+            hashpipe_info(user_data->thread_name, "Next mode: B");
+            break;
+          case 'H':
+            blade_mode_next = BLADE_MODE_H;
+            hashpipe_info(user_data->thread_name, "Next mode: H");
+            break;
+          case 'X':
+            hashpipe_info(user_data->thread_name, "Next mode: X");
+            blade_mode_next = BLADE_MODE_X;
+            break;
+          default:
+            hashpipe_info(user_data->thread_name, "Next mode: default (X)");
+            blade_mode_next = BLADE_MODE_X;
+        }
+        
+        if (user_data->mode_config && user_data->mode != blade_mode_next) {
+          // TODO this segfaults on `free()`, will have to fix to enable dynamic blade instances
+          switch (user_data->mode) {
+            case BLADE_MODE_A:
+              hashpipe_warn(user_data->thread_name, "freeing a_config...");
+              free((struct blade_ata_mode_a_config*) user_data->mode_config);
+              break;
+            case BLADE_MODE_B:
+              hashpipe_warn(user_data->thread_name, "freeing b_config...");
+              free((struct blade_ata_mode_b_config*) user_data->mode_config);
+              break;
+            case BLADE_MODE_H:
+              hashpipe_warn(user_data->thread_name, "freeing c_config...");
+              free((struct blade_ata_mode_c_config*) user_data->mode_config);
+              break;
+            case BLADE_MODE_X:
+              hashpipe_warn(user_data->thread_name, "freeing x_config...");
+              free((struct blade_ata_mode_x_config*) user_data->mode_config);
+              break;
+            default:
+              hashpipe_warn(user_data->thread_name, "unknown existing config, ignoring...");
+              user_data->mode_config = NULL;
+              // free((struct blade_ata_mode_x_config*) user_data->mode_config);
+              break;
+          }
+          user_data->mode = BLADE_MODE_UNKNOWN;
+        }
+        switch (blade_mode_next) {
+          // case BLADE_MODE_A:
+          //   if (user_data->mode == BLADE_MODE_UNKNOWN) {
+          //     user_data->mode_config = malloc(sizeof(struct blade_ata_mode_a_config));
+          //   }
+          //   user_data->mode = BLADE_MODE_A;
+          //   memcpy(user_data->mode_config,& BLADE_ATA_MODE_A_CONFIG, sizeof(struct blade_ata_mode_a_config));
+          //   break;
+          // case BLADE_MODE_B:
+          //   if (user_data->mode == BLADE_MODE_UNKNOWN) {
+          //     user_data->mode_config = malloc(sizeof(struct blade_ata_mode_b_config));
+          //   }
+          //   user_data->mode = BLADE_MODE_B;
+          //   memcpy(user_data->mode_config, &BLADE_ATA_MODE_B_CONFIG, sizeof(struct blade_ata_mode_b_config));
+          //   break;
+          // case BLADE_MODE_H:
+          //   if (user_data->mode == BLADE_MODE_UNKNOWN) {
+          //     user_data->mode_config = malloc(sizeof(struct blade_ata_mode_c_config));
+          //   }
+          //   user_data->mode = BLADE_MODE_H;
+          //   memcpy(user_data->mode_config, &BLADE_ATA_MODE_H_CONFIG, sizeof(struct blade_ata_mode_c_config));
+          //   break;
+          case BLADE_MODE_X:
+          default:
+            if (user_data->mode == BLADE_MODE_UNKNOWN) {
+              user_data->mode_config = malloc(sizeof(struct blade_ata_mode_x_config));
+            }
+            user_data->mode = BLADE_MODE_X;
+            memcpy(user_data->mode_config, &BLADE_ATA_MODE_X_CONFIG, sizeof(struct blade_ata_mode_x_config));
+          
+            double corr_integration_time, tbin;
+            hgetr8(user_data->status->buf, "TBIN", &tbin);
+            hashpipe_info(user_data->thread_name, "Default integration time = %lu * %f.", BLADE_ATA_MODE_X_CONFIG.integrationSize, tbin);
+            corr_integration_time = BLADE_ATA_MODE_X_CONFIG.integrationSize*tbin;
+            hgetr8(user_data->status->buf, "XTIMEINT", &corr_integration_time);
+            uint32_t blocks_in_integration = (uint32_t) (0.99 + (corr_integration_time / (tbin * BLADE_ATA_CONFIG.inputDims.NTIME)));
+            if(blocks_in_integration == 0) {
+              blocks_in_integration = 1;
+            }
+            hashpipe_info(user_data->thread_name, "Integration granularity is per block: %lu*%f.", BLADE_ATA_CONFIG.inputDims.NTIME, tbin);
+            hashpipe_info(user_data->thread_name, "Integration length is %u block(s).", blocks_in_integration);
+            ((struct blade_ata_mode_x_config*) user_data->mode_config)->integrationSize = blocks_in_integration*BLADE_ATA_CONFIG.inputDims.NTIME;
+            hashpipe_info(user_data->thread_name, "Set integration time from XTIMEINT = (%lu*%lu) * %f = %f.", blocks_in_integration, BLADE_ATA_CONFIG.inputDims.NTIME, tbin, ((struct blade_ata_mode_x_config*) user_data->mode_config)->integrationSize*tbin);
+
+            // Round up the number of integration blocks in the observation
+            double observation_integrations = ((double)(pktidx_obs_stop - pktidx_obs_start))/(blocks_in_integration*BLADE_ATA_CONFIG.inputDims.NTIME);
+            uint64_t observation_integrations_rounded = observation_integrations + ((double)(blocks_in_integration*BLADE_ATA_CONFIG.inputDims.NTIME)-1)/(blocks_in_integration*BLADE_ATA_CONFIG.inputDims.NTIME);
+            hashpipe_info(user_data->thread_name, "Rounded the observation's integrations from %f up to %d", observation_integrations, observation_integrations_rounded);
+            pktidx_obs_stop = observation_integrations_rounded*blocks_in_integration*BLADE_ATA_CONFIG.inputDims.NTIME + pktidx_obs_start;
+            hashpipe_info(user_data->thread_name, "\tIncreasing PKTSTOP to %lu", pktidx_obs_stop);
+
+            hputr8(user_data->status->buf, "XTIMEINT", blocks_in_integration * BLADE_ATA_CONFIG.inputDims.NTIME * tbin);
+            hputr4(user_data->status->buf, "XTIME", (pktidx_obs_stop - pktidx_obs_start) * tbin);
+            hputu4(user_data->status->buf, "XINTEGS", observation_integrations_rounded);
+            hputu8(user_data->status->buf, "PKTSTOP", pktidx_obs_stop);
+            break;
+        }
       }
       hashpipe_status_unlock_safe(user_data->status);
 
@@ -396,7 +518,11 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
 
       blade_ata_terminate();
       blade_ata_initialize(
+        #if BLADE_ATA_MODE == BLADE_ATA_MODE_X
+        *((struct blade_ata_mode_x_config*) user_data->mode_config),
+        #else
         BLADE_ATA_CONFIG,
+        #endif
         user_data->blade_number_of_workers,
         &observationMetaData,
         &arrayReferencePosition,
@@ -511,6 +637,15 @@ void blade_cb_input_buffer_enqueued(void* user_data_void, size_t buffer_input_id
       tbin *= BLADE_ATA_CONFIG.integrationSize;
       tbin *= BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
     }
+
+    #elif BLADE_ATA_MODE == BLADE_ATA_MODE_X
+    hputr8(databuf_header, "XTIMEINT", BLADE_ATA_CONFIG.channelizerRate*((struct blade_ata_mode_x_config*) user_data->mode_config)->integrationSize*tbin);
+    hputr8(databuf_header, "NSAMPLES", 1.0); // should be a ratio of dropped packets to expected packets...
+    hputi4(databuf_header, "NCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate);
+    hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NANTS*BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate);
+    chanbw /= BLADE_ATA_CONFIG.channelizerRate;
+    tbin *= BLADE_ATA_CONFIG.channelizerRate;
+    tbin *= BLADE_ATA_CONFIG.integrationSize;
     #else
     hputi4(databuf_header, "NCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
     hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
@@ -671,6 +806,9 @@ static void *run(hashpipe_thread_args_t *args)
     .fill_to_free_moving_sum_ns = 0,
     // .fill_to_free_block_ns = {0},
     // .ts_blocks_recvd = {0},
+
+    .mode = BLADE_MODE_UNKNOWN,
+    .mode_config = NULL,
   };
 
   #if 0 // BLADE_ATA_MODE == BLADE_ATA_MODE_A || BLADE_ATA_MODE == BLADE_ATA_MODE_H
