@@ -35,7 +35,16 @@
 #define MJD0 2400000.5
 
 static int safe_close(UVH5_file_t* uvh5_file) {
-  UVH5close(uvh5_file);
+  if(uvh5_file->file_id) {
+    #ifdef BLADE_CORRELATOR
+      // this buffer gets freed in UVH5close...
+      uvh5_file->visdata = malloc(8);
+    #endif
+    // Close file
+    free(uvh5_file->header.object_name);
+    UVH5close(uvh5_file);
+    memset(uvh5_file, 0, sizeof(UVH5_file_t));
+  }
   return 0;
 }
 
@@ -216,18 +225,8 @@ static void *run(hashpipe_thread_args_t * args)
           if(state == RECORD){//and recording, finalise block
             hashpipe_info(thread_name, "Recording ended...");
             // If file open, close it
-            if(uvh5_file.file_id) {
-              #ifdef BLADE_CORRELATOR
-                // this buffer gets freed...
-                uvh5_file.visdata = malloc(8);
-              #endif
-              // Close file
-              free(uvh5_header->object_name);
-              UVH5close(&uvh5_file);
-              memset(&uvh5_file, 0, sizeof(UVH5_file_t));
-              uvh5_header = &uvh5_file.header;
-              got_block_0 = 0;
-            }
+            safe_close(&uvh5_file);
+            got_block_0 = 0;
           }
           // Print end of recording conditions
           hashpipe_info(thread_name, "%s ended: "
@@ -466,8 +465,10 @@ static void *run(hashpipe_thread_args_t * args)
         UVH5open(fname, &uvh5_file, UVH5TcreateCF32());
         #else
           #ifdef XGPU_INTEGRATE_AS_CF64_ON_CPU
+          hashpipe_info(thread_name, "XGPU_INTEGRATE_AS_CF64_ON_CPU: open CF64");
           UVH5open(fname, &uvh5_file, UVH5TcreateCF64());
           #else
+          hashpipe_info(thread_name, "XGPU: open CI32");
           UVH5open(fname, &uvh5_file, UVH5TcreateCI32());
           #endif
         #endif
@@ -559,19 +560,13 @@ static void *run(hashpipe_thread_args_t * args)
       // If obviously last block, close up and transition to IDLE
       if(block_stop_pktidx >= obs_stop_pktidx){
         // If file open, close it
-        if(uvh5_file.file_id) {
-          // Close file
-          free(uvh5_header->object_name);
-          UVH5close(&uvh5_file);
-          memset(&uvh5_file, 0, sizeof(UVH5_file_t));
-          uvh5_header = &uvh5_file.header;
-          got_block_0 = 0;
-
-          // Print end of recording conditions
-          hashpipe_info(thread_name, "recorded last block: "
-            "obs_start %lu obs_stop %lu blk_start_pktidx %lu blk_stop_pktidx %lu",
-            obs_start_pktidx, obs_stop_pktidx, block_start_pktidx, block_stop_pktidx);
-        }
+        safe_close(&uvh5_file);
+        got_block_0 = 0;
+    
+        // Print end of recording conditions
+        hashpipe_info(thread_name, "recorded last block: "
+          "obs_start %lu obs_stop %lu blk_start_pktidx %lu blk_stop_pktidx %lu",
+          obs_start_pktidx, obs_stop_pktidx, block_start_pktidx, block_stop_pktidx);
         hput_obsdone(st, 1);
         flag_state_update = 1;
         state = IDLE;
