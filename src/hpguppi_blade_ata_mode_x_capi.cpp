@@ -26,6 +26,7 @@ class ModeXRunner : public Runner {
           outputBuffer(config.outputShape)
     {
         if (channelizationRate > 1 ) {
+            // Spectral line mode (16 MHz firmware)
             if (channelizationRate < config.inputShape.numberOfTimeSamples()) {
                 BL_FATAL("Channelizer rate must be a multiple of NTIME: {} < {}.", channelizationRate, config.inputShape.numberOfTimeSamples());
                 throw Result::ASSERTION_ERROR;
@@ -36,28 +37,27 @@ class ModeXRunner : public Runner {
             }
         }
 
-        
+        bool contiuumNotSpectral = channelizationRate == 1;
         // modeX will always produce T=1 output shapes:
         //   if channelizer is not bypassed, modeX will upchannelize all time first
         //   if channelizer is bypassed, modeX will integrate all input time
         // further integration happens thereafter to reach integrationRate
-
-        U64 preCorrelatorStackerRate = channelizationRate == 1 ? 1 : channelizationRate/config.inputShape.numberOfTimeSamples();
-        U64 correlatorIntegrationRate = channelizationRate == 1 ? integrationRate/config.inputShape.numberOfTimeSamples() : integrationRate;
+        U64 preCorrelatorStackerRate = contiuumNotSpectral ? 1 : channelizationRate/config.inputShape.numberOfTimeSamples();
+        U64 correlatorIntegrationRate = contiuumNotSpectral ? integrationRate/config.inputShape.numberOfTimeSamples() : integrationRate;
 
         ModeX::Config cfg = {
             .inputShape = config.inputShape,
             .outputShape = config.outputShape,
 
             .preCorrelatorStackerMultiplier = preCorrelatorStackerRate,
-            .channelizerBypass = channelizationRate == 1,
+            .channelizerBypass = contiuumNotSpectral,
             
             .correlatorIntegrationRate = correlatorIntegrationRate,
             .correlatorConjugateAntennaIndex = BLADE_ATA_MODE_X_CONJUGATION_INDEX,
 
-            .correlatorUseSharedMemory = true,
-            .correlatorCalculationMode = CALC_MODE::INTEGER,
-            .correlatorBlockSize = 64
+            .correlatorUseSharedMemory = contiuumNotSpectral,
+            .correlatorCalculationMode = contiuumNotSpectral ? CALC_MODE::INTEGER : CALC_MODE::DOUBLE_PRECISION_FP,
+            .correlatorBlockSize = contiuumNotSpectral ? 64 : 32
         };
         this->connect(
             pipeline,
@@ -73,29 +73,6 @@ class ModeXRunner : public Runner {
         BL_CHECK(this->copy(inputBuffer, cpuInputBuffer));
         return Result::SUCCESS;
     }
-
-    // Result transferInSynchronised(const ArrayTensor<Device::CPU, IT>& cpuInputBuffer) {
-    //     // BL_CHECK(this->copy(inputBuffer, cpuInputBuffer));
-    //     // return synchroniseHead();
-
-    //     if (inputBuffer[getHeadIndex()].size() != cpuInputBuffer.size()) {
-    //         BL_FATAL("Size mismatch between source and destination ({}, {}).",
-    //                 cpuInputBuffer.size(), inputBuffer[getHeadIndex()].size());
-    //     }
-
-    //     if (inputBuffer[getHeadIndex()].shape() != cpuInputBuffer.shape()) {
-    //         BL_FATAL("Shape mismatch between source ({}) and destination ({}).",
-    //                 cpuInputBuffer.shape(), inputBuffer[getHeadIndex()].shape());
-    //     }
-        
-
-    //     BL_CUDA_CHECK(cudaMemcpy(inputBuffer[getHeadIndex()].data(), cpuInputBuffer.data(), cpuInputBuffer.size_bytes(),
-    //                 cudaMemcpyHostToDevice), [&]{
-    //         BL_FATAL("Can't copy data: {}", err);
-    //         return Result::CUDA_ERROR;
-    //     });
-    //     return Result::SUCCESS;
-    // }
 
     Result transferResult() {
         BL_CHECK(this->copy(outputBuffer, pipeline->getOutputBuffer()));
