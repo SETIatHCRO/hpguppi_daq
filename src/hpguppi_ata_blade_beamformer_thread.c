@@ -284,26 +284,20 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
         // hgets(user_data->status->buf, "OBSINFOP", 70, obs_info_toml_filepath);
         hgets(user_data->status->buf, "CALWGHTP", 70, obs_antenna_calibration_filepath);
 
+        #if BLADE_ATA_MODE == BLADE_ATA_MODE_X
         enum blade_mode_t blade_mode_next;
         switch (blade_mode) {
           case 'A':
             blade_mode_next = BLADE_MODE_A;
-            hashpipe_info(user_data->thread_name, "Next mode: A");
             break;
           case 'B':
             blade_mode_next = BLADE_MODE_B;
-            hashpipe_info(user_data->thread_name, "Next mode: B");
             break;
           case 'H':
             blade_mode_next = BLADE_MODE_H;
-            hashpipe_info(user_data->thread_name, "Next mode: H");
             break;
           case 'X':
-            hashpipe_info(user_data->thread_name, "Next mode: X");
-            blade_mode_next = BLADE_MODE_X;
-            break;
           default:
-            hashpipe_info(user_data->thread_name, "Next mode: default (X)");
             blade_mode_next = BLADE_MODE_X;
         }
         
@@ -366,31 +360,35 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
           
             double corr_integration_time, tbin;
             hgetr8(user_data->status->buf, "TBIN", &tbin);
-            hashpipe_info(user_data->thread_name, "Default integration time = %lu * %f.", BLADE_ATA_MODE_X_CONFIG.integrationSize, tbin);
+            hashpipe_info(user_data->thread_name, "Fine-channel timespan = %lu * %f us = %f us.", BLADE_ATA_MODE_X_CONFIG.channelizerRate, tbin*1e6, BLADE_ATA_MODE_X_CONFIG.channelizerRate*tbin*1e6);
+            uint32_t ntime_process_step = BLADE_ATA_MODE_X_CONFIG.channelizerRate == 1 ? BLADE_ATA_MODE_X_CONFIG.inputDims.NTIME : BLADE_ATA_MODE_X_CONFIG.channelizerRate;
+
+            hashpipe_info(user_data->thread_name, "Default integration time = %lu * %f us.", BLADE_ATA_MODE_X_CONFIG.integrationSize, tbin*1e6);
             corr_integration_time = BLADE_ATA_MODE_X_CONFIG.integrationSize*tbin;
             hgetr8(user_data->status->buf, "XTIMEINT", &corr_integration_time);
-            uint32_t blocks_in_integration = (uint32_t) (0.99 + (corr_integration_time / (tbin * BLADE_ATA_CONFIG.inputDims.NTIME)));
+            uint32_t blocks_in_integration = (uint32_t) (0.99 + (corr_integration_time / (tbin * ntime_process_step)));
             if(blocks_in_integration == 0) {
               blocks_in_integration = 1;
             }
-            hashpipe_info(user_data->thread_name, "Integration granularity is per block: %lu*%f.", BLADE_ATA_CONFIG.inputDims.NTIME, tbin);
+            hashpipe_info(user_data->thread_name, "Integration granularity is per process-block: %lu*%f us.", ntime_process_step, tbin*1e6);
             hashpipe_info(user_data->thread_name, "Integration length is %u block(s).", blocks_in_integration);
-            ((struct blade_ata_mode_x_config*) user_data->mode_config)->integrationSize = blocks_in_integration*BLADE_ATA_CONFIG.inputDims.NTIME;
-            hashpipe_info(user_data->thread_name, "Set integration time from XTIMEINT = (%lu*%lu) * %f = %f.", blocks_in_integration, BLADE_ATA_CONFIG.inputDims.NTIME, tbin, ((struct blade_ata_mode_x_config*) user_data->mode_config)->integrationSize*tbin);
+            ((struct blade_ata_mode_x_config*) user_data->mode_config)->integrationSize = BLADE_ATA_MODE_X_CONFIG.channelizerRate == 1 ? blocks_in_integration*ntime_process_step : blocks_in_integration;
+            hashpipe_info(user_data->thread_name, "Set integration time from XTIMEINT = (%lu*%lu) * %f us = %f.", blocks_in_integration, ntime_process_step, tbin*1e6, ((struct blade_ata_mode_x_config*) user_data->mode_config)->integrationSize*tbin);
 
             // Round up the number of integration blocks in the observation
-            double observation_integrations = ((double)(pktidx_obs_stop - pktidx_obs_start))/(blocks_in_integration*BLADE_ATA_CONFIG.inputDims.NTIME);
-            uint64_t observation_integrations_rounded = observation_integrations + ((double)(blocks_in_integration*BLADE_ATA_CONFIG.inputDims.NTIME)-1)/(blocks_in_integration*BLADE_ATA_CONFIG.inputDims.NTIME);
+            double observation_integrations = ((double)(pktidx_obs_stop - pktidx_obs_start))/(blocks_in_integration*ntime_process_step);
+            uint64_t observation_integrations_rounded = observation_integrations + ((double)(blocks_in_integration*ntime_process_step)-1)/(blocks_in_integration*ntime_process_step);
             hashpipe_info(user_data->thread_name, "Rounded the observation's integrations from %f up to %d", observation_integrations, observation_integrations_rounded);
-            pktidx_obs_stop = observation_integrations_rounded*blocks_in_integration*BLADE_ATA_CONFIG.inputDims.NTIME + pktidx_obs_start;
+            pktidx_obs_stop = observation_integrations_rounded*blocks_in_integration*ntime_process_step + pktidx_obs_start;
             hashpipe_info(user_data->thread_name, "\tIncreasing PKTSTOP to %lu", pktidx_obs_stop);
 
-            hputr8(user_data->status->buf, "XTIMEINT", blocks_in_integration * BLADE_ATA_CONFIG.inputDims.NTIME * tbin);
+            hputr8(user_data->status->buf, "XTIMEINT", blocks_in_integration * ntime_process_step * tbin);
             hputr4(user_data->status->buf, "XTIME", (pktidx_obs_stop - pktidx_obs_start) * tbin);
             hputu4(user_data->status->buf, "XINTEGS", observation_integrations_rounded);
             hputu8(user_data->status->buf, "PKTSTOP", pktidx_obs_stop);
             break;
         }
+        #endif
       }
       hashpipe_status_unlock_safe(user_data->status);
 
