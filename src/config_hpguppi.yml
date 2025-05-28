@@ -87,7 +87,8 @@ ata:
   instance_bindhost: [enp97s0f1, enp225s0f1]
   thread_mask_lengths:
     hpguppi_ata_ibv_payload_order_thread:
-      10
+      ibv: 12
+      "*": 10
   subsystem_threads:
     _:
       - hpguppi_ibvpkt_thread
@@ -212,6 +213,15 @@ dev:
         - TELINFOP=/opt/mnt/share/telinfo_ata.toml
         - OBSINFOP=/opt/mnt/share/obsinfo.toml
         - CALWGHTP=/opt/mnt/share/ant_weights_1+0j.bin
+      binary_ingest:
+        - HPCONFIG=DEV_BI-BLADE_C-UVH5
+        - PROJID=blade
+        - BACKEND=UVH5
+        - TELINFOP=/opt/mnt/share/telinfo_ata.toml
+        - OBSINFOP=/opt/mnt/share/obsinfo.toml
+        - CALWGHTP=/opt/mnt/share/ant_weights_1+0j.bin
+        - UVH5TELP=/opt/mnt/share/telinfo_ata.toml
+        - IERSALLP=/opt/mnt/share/iers_finals2000A.all
     - POLS=xy
     - DIRECTIO=1
     # - IBVPKTSZ=42,16,2048
@@ -225,7 +235,8 @@ dev:
   instance_bindhost: [enp97s0f1, enp225s0f1]
   thread_mask_lengths:
     hpguppi_ata_ibv_payload_order_thread:
-      10
+      ibv_blade_c: 14
+      "*": 10
   subsystem_threads:
     xgpu:
       - hpguppi_ibvpkt_thread

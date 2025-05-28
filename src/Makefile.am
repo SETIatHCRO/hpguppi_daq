@@ -36,7 +36,10 @@ libsla_support = slalib.h sla.c f77.h
 
 hpguppi_threads = \
 		hpguppi_ata_ibv_payload_order_thread.c \
-		hpguppi_atasnap_obs_rawdisk_thread.c
+		hpguppi_atasnap_obs_rawdisk_thread.c \
+		hpguppi_binary_dump_thread.c \
+		hpguppi_binary_ingest_thread.c \
+		hpguppi_no_dump_thread.c
 #		guppiraw_ibv_packetize_thread.c # depends on rawspec currently
 
 if IBVERBS_ENABLED

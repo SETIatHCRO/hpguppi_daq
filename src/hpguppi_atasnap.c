@@ -95,6 +95,7 @@ void wait_for_block_free(const struct datablock_stats * d,
     hashpipe_status_t * st, const char * status_key)
 {
   int rv;
+  size_t timeout_counts = 0;
   char netstat[80] = {0};
   char netbuf_status[80];
   int netbuf_full = hpguppi_databuf_total_status(d->dbout);
@@ -108,21 +109,40 @@ void wait_for_block_free(const struct datablock_stats * d,
   }
   hashpipe_status_unlock_safe(st);
 
-  while ((rv=hpguppi_databuf_wait_free(d->dbout, d->block_idx))
+  struct timespec timeout, timestamp_start, timestamp_stop;
+  timeout.tv_sec = 0;
+  timeout.tv_nsec = 50000; // 50 us
+      
+  clock_gettime(CLOCK_MONOTONIC, &timestamp_start);
+  // while ((rv=hpguppi_databuf_wait_free_timeout(d->dbout, d->block_idx, &timeout))
+  while ((rv=hpguppi_databuf_check_free(d->dbout, d->block_idx))
       != HASHPIPE_OK) {
     if (rv==HASHPIPE_TIMEOUT) {
-    //   netbuf_full = hpguppi_databuf_total_status(d->dbout);
-    //   sprintf(netbuf_status, "%d/%d", netbuf_full, d->dbout->header.n_block););
-      hashpipe_status_lock_safe(st);
-      hputs(st->buf, status_key, "outblocked");
-      hputs(st->buf, "NETBUFST", netbuf_status);
-      hashpipe_status_unlock_safe(st);
+      if (timeout_counts == 0) {
+        hashpipe_status_lock_safe(st);
+          hputs(st->buf, status_key, "outblocked");
+          hputs(st->buf, "NETBUFST", netbuf_status);
+        hashpipe_status_unlock_safe(st);
+        // hashpipe_warn(status_key,
+        //     "blocked waiting for free databuf: %d (%s full)", d->block_idx, netbuf_status);
+      }
+      timeout_counts += 1;
     } else {
-      hashpipe_error("hpguppi_atasnap_pktsock_thread",
+      hashpipe_error(status_key,
           "error waiting for free databuf");
       pthread_exit(NULL);
     }
   }
+  clock_gettime(CLOCK_MONOTONIC, &timestamp_stop);
+  // int64_t ns_elapsed = (((int64_t)timestamp_stop.tv_sec-timestamp_start.tv_sec)*1000000000+(timestamp_stop.tv_nsec-timestamp_start.tv_nsec));
+  if (timeout_counts != 0) {
+    // hashpipe_warn(status_key,
+    //     "blocked waiting (%d timeouts) for free databuf #%d (%s full) for %lu ns.", timeout_counts, d->block_idx, netbuf_status, ns_elapsed);
+  }
+  // else {
+  //   hashpipe_warn(status_key,
+  //       "no waiting for free databuf #%d (%s full) (%lu ns).", d->block_idx, netbuf_status, ns_elapsed);
+  // }
 
   hashpipe_status_lock_safe(st);
   {

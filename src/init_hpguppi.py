@@ -91,8 +91,8 @@ def delete(
 	# Gather cpu core count
 	try:
 		cores_per_cpu = get_cpu_core_count()
-	except:
-		print('Error trying to get the cpu core count.')
+	except BaseException as err:
+		print(f'Error trying to get the cpu core count: {err}')
 		exit(0)
 	
 	system_environment_keys_start_index = len(environment_keys)
@@ -140,8 +140,8 @@ def run(
 	# Gather cpu core count
 	try:
 		cores_per_cpu = get_cpu_core_count()
-	except:
-		print('Error trying to get the cpu core count.')
+	except BaseException as err:
+		print(f'Error trying to get the cpu core count: {err}')
 		exit(0)
 
 	# Gather system configuration for the cores_per_cpu
@@ -259,10 +259,16 @@ def run(
 				cpu_core += 1
 			else:
 				mask_val = 0
-				for core_idx in range(cpu_core, cpu_core+thread_mask_length_dict[thread]):
+				thread_mask_length = thread_mask_length_dict[thread]
+				if isinstance(thread_mask_length, dict):
+					thread_mask_length = thread_mask_length.get(
+						subsystem,
+						thread_mask_length["*"]
+					)
+				for core_idx in range(cpu_core, cpu_core+thread_mask_length):
 					mask_val += 2**core_idx
 				hpguppi_threads_cmd_segment.extend(['-m', str(mask_val), str(thread)])
-				cpu_core += thread_mask_length_dict[thread]
+				cpu_core += thread_mask_length
 
 	# Gather instance-agnostic instantiation variables
 	prefix_exec = system.get('prefix_exec', default_prefix_exec)

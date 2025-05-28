@@ -40,7 +40,7 @@
 #include "hpguppi_pktbuf.h"
 
 #include <omp.h>
-#define ATA_IBV_FOR_PACKET_THREAD_COUNT 10
+#define ATA_IBV_FOR_PACKET_THREAD_COUNT 12
 #define ATA_IBV_TRANSPOSE_PACKET_THREAD_COUNT 1
 #define ATA_IBV_THREAD_COUNT ATA_IBV_FOR_PACKET_THREAD_COUNT*ATA_IBV_TRANSPOSE_PACKET_THREAD_COUNT
 
@@ -255,14 +255,14 @@ int debug_i=0, debug_j=0;
   // wblk is a two element array of block_info structures (i.e. the working
   // blocks)
   int wblk_idx;
-  const int n_wblock = 3;
+  const int n_wblock = 14;
   struct datablock_stats wblk[n_wblock];
   uint32_t *thread_wblk_pkt_count = malloc(ATA_IBV_FOR_PACKET_THREAD_COUNT*n_wblock*sizeof(uint32_t));
   memset(thread_wblk_pkt_count, 0, ATA_IBV_FOR_PACKET_THREAD_COUNT*n_wblock*sizeof(uint32_t));
 
   // Packet block variables
   uint64_t blk0_relative_pkt_seq_num = 0;
-  unsigned long pkt_blk_num, last_pkt_blk_num = ~0;
+  long pkt_blk_num, last_pkt_blk_num = ~0;
   uint64_t obs_start_seq_num = 0, obs_stop_seq_num = 0, blk0_start_seq_num = 0;
   uint64_t prev_obs_start_seq_num, prev_obs_stop_seq_num;
   uint32_t antenna_byte_stride, channel_byte_stride, time_byte_stride;
@@ -560,7 +560,7 @@ int debug_i=0, debug_j=0;
     ata_snap_parse_ibv_packet(p_pkt, &pkt_info);
 
     // Only do the work if packets seem to be in range, or the downstream controlled `observation_complete` is low
-    if((pkt_info.pktidx <= obs_stop_seq_num || !observation_complete) && obs_info_validity > OBS_INVALID) {
+    if ((pkt_info.pktidx <= obs_stop_seq_num || !observation_complete) && obs_info_validity > OBS_INVALID) {
       // Check the first packet's timestamp, to determine reinit_blocks
       //  This works because it is figured that a block filled with packets
       //  will contain packets with indices that place them in two adjacent downstream blocks.
@@ -569,6 +569,10 @@ int debug_i=0, debug_j=0;
       blk0_relative_pkt_seq_num = pkt_info.pktidx - blk0_start_seq_num;
       // Get packet's block number relative to the first block's starting index.
       pkt_blk_num = blk0_relative_pkt_seq_num / obs_info.pktidx_per_block;
+      
+      // struct timespec ts_now_test = {0};
+      // clock_gettime(CLOCK_MONOTONIC, &ts_now_test);
+      // hashpipe_info(thread_name, "pkt_blk_num: %ld, wblk[0].block_num: %ld, time: %ld s %ld ns", pkt_blk_num, wblk[0].block_num, ts_now_test.tv_sec, ts_now_test.tv_nsec);
 
       //TODO dont use pkt_blk_num due to underflow
       if(pkt_blk_num + 1 < wblk[0].block_num 
@@ -581,10 +585,11 @@ int debug_i=0, debug_j=0;
             // Should only happen when seeing first packet when obs_info is valid
             // warn in case it happens in other scenarios
             hashpipe_warn(thread_name,
-                "working blocks reinit due to packet index out of working range\n\t\t(PKTIDX %lu) [%ld, %ld  <> %lu]",
+                "working blocks reinit due to packet index out of working range\n\t\t(PKTIDX %lu) [%ld, %ld  <> %ld]",
                 pkt_info.pktidx, wblk[0].block_num - 1, wblk[n_wblock-1].block_num + 1, pkt_blk_num);
           }
           else { // observing and first packet's timestamp is out of working range
+            hashpipe_warn(thread_name, "rushing %d blocks...", pkt_blk_num - wblk[(n_wblock-1)/2].block_num);
             n_blks_rushed += pkt_blk_num - wblk[(n_wblock-1)/2].block_num;
             while(pkt_blk_num > wblk[(n_wblock-1)/2].block_num) { // only progress working range
               datablock_header = datablock_stats_header(&wblk[0]);

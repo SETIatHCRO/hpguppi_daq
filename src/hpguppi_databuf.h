@@ -13,9 +13,9 @@
 // but this keeps things 4K (i.e. page) aligned.
 #define ALIGNMENT_SIZE (4096)
 
-#define N_INPUT_BLOCKS 12
+#define N_INPUT_BLOCKS 16
 #define BLOCK_HDR_SIZE  (5*80*512)      // in bytes, from guppi_daq_server
-#define BLOCK_DATA_SIZE (128*1024*1024) // in bytes, from guppi_daq_server
+#define BLOCK_DATA_SIZE (28*12*1024*1024) // in bytes
 
 typedef struct hpguppi_input_block {
   char hdr[BLOCK_HDR_SIZE];
@@ -76,6 +76,9 @@ typedef struct hpguppi_databuf {
 #define hpguppi_databuf_busywait_free(d, block_id)\
     hashpipe_databuf_busywait_free((hashpipe_databuf_t *)d, block_id)
 
+#define hpguppi_databuf_check_free(d, block_id)\
+    hashpipe_databuf_check_free((hashpipe_databuf_t *)d, block_id)
+
 #define hpguppi_databuf_wait_filled_timeout(d, block_id, timeout) \
     hashpipe_databuf_wait_filled_timeout((hashpipe_databuf_t *)d, block_id, timeout)
 
@@ -84,6 +87,9 @@ typedef struct hpguppi_databuf {
 
 #define hpguppi_databuf_busywait_filled(d, block_id)\
     hashpipe_databuf_busywait_filled((hashpipe_databuf_t *)d, block_id)
+
+#define hpguppi_databuf_check_filled(d, block_id)\
+    hashpipe_databuf_check_filled((hashpipe_databuf_t *)d, block_id)
 
 #define hpguppi_databuf_set_free(d, block_id)\
     hashpipe_databuf_set_free((hashpipe_databuf_t *)d, block_id)

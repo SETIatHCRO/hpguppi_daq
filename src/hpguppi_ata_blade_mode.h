@@ -6,7 +6,7 @@
 #define BLADE_ATA_MODE_H 2
 #define BLADE_ATA_MODE_X 3
 
-#define BLADE_ATA_MODE BLADE_ATA_MODE_H
+#define BLADE_ATA_MODE BLADE_ATA_MODE_X
 
 #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
 #include "hpguppi_blade_ata_mode_a_config.h"

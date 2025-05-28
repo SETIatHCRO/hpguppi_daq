@@ -98,6 +98,18 @@
 // #define IBV_FLOW_ATTR_SNIFFER IBV_EXP_FLOW_ATTR_SNIFFER
 // #endif
 
+enum mcast_flag {
+  MCAST_INACTIVE,
+  MCAST_ACTIVE,
+  MCAST_CHANGE
+};
+
+typedef struct {
+  uint32_t ip;
+  uint16_t port;
+  enum mcast_flag flag;
+} hpguppi_mcast_details_t;
+
 
 // Wait for a block_info's databuf block to be free, then copy status buffer to
 // block's header and clear block's data.  Calling thread will exit on error
@@ -488,9 +500,13 @@ static
 void
 update_status_buffer(hashpipe_status_t *st, int nfull, int nblocks,
     uint64_t nbytes, uint64_t npkts, uint64_t ns_elapsed,
-    int32_t * sniffer_flag, float ibvblkms)
+    int32_t * sniffer_flag, hpguppi_mcast_details_t *mcast_details,
+    float ibvblkms)
 {
   char ibvbufst[80];
+  char mcastdest_str[80] = {0};
+  uint16_t mcastport = 0;
+  uint32_t mcastdest = 0, mcastport_u32 = 0;
   double gbps;
   double pps;
 
@@ -513,6 +529,31 @@ update_status_buffer(hashpipe_status_t *st, int nfull, int nblocks,
     }
     else {
       hputi4(st->buf, "IBVSNIFF", *sniffer_flag);
+    }
+
+    hgets(st->buf, "IBVMCGRP", sizeof(mcastdest_str), mcastdest_str);
+    hgetu4(st->buf, "IBVMCPRT", &mcastport_u32);
+    mcastport = mcastport_u32&&65535;
+    if (mcastdest_str[0] != 0) {
+      char* token = strtok(mcastdest_str, ".");
+      for (int byte = 4; byte-- > 0; ) {
+        mcastdest += atoi(token) << (8*byte);
+        token = strtok(NULL, ".");
+      }
+
+      if (mcastdest != mcast_details->ip || mcastport != mcast_details->port) {
+        mcast_details->ip = mcastdest;
+        mcast_details->port = mcastport;
+        if (mcast_details->flag == MCAST_ACTIVE) {
+          mcast_details->flag = MCAST_CHANGE;
+        }
+        else {
+          mcast_details->flag = MCAST_ACTIVE;
+        }
+      }
+    }
+    else if (mcast_details->flag == MCAST_ACTIVE) {
+      mcast_details->flag = MCAST_INACTIVE;
     }
   }
   hashpipe_status_unlock_safe(st);
@@ -652,6 +693,10 @@ int debug_i=0, debug_j=0;
   // IBVSNIFF>-1 in the status buffer at startup.
   int32_t sniffer_flag = -1;
 
+  // mcast flow will be handled within the hibv_ctx->ibv_flows
+  // at index `hibv_ctx->max_flows-1`
+  hpguppi_mcast_details_t mcast_details = {0};
+
   // Wait until the first two blocks are marked as free
   // (should already be free)
   for(i=0; i<2; i++) {
@@ -708,7 +753,8 @@ int debug_i=0, debug_j=0;
       // Timeout, update status buffer
       update_status_buffer(st, hpguppi_databuf_total_status(db),
           db->header.n_block, bytes_received, pkts_received, ns_elapsed,
-          &sniffer_flag, round((double)fill_moving_sum_ns / db->header.n_block) / 1e6);
+          &sniffer_flag, &mcast_details,
+          round((double)fill_moving_sum_ns / db->header.n_block) / 1e6);
 
       // Reset counters
       bytes_received = 0;
@@ -733,6 +779,65 @@ int debug_i=0, debug_j=0;
         }
         sniffer_flow = NULL;
       }
+
+      if (
+        (mcast_details.flag == MCAST_ACTIVE && !hibv_ctx->ibv_flows[hibv_ctx->max_flows-1])
+        || mcast_details.flag == MCAST_CHANGE
+      ) {
+        if (hpguppi_ibvpkt_flow(
+          db, // hpguppi_input_databuf_t *
+          hibv_ctx->max_flows-1, // flow_idx
+          IBV_FLOW_SPEC_UDP, //enum ibv_flow_spec_type flow_type
+          NULL, // uint8_t * dst_mac
+          NULL, // uint8_t * src_mac
+          0, // uint16_t  ether_type
+          0, // uint16_t  vlan_tag
+          0, // uint32_t  src_ip
+          mcast_details.ip, // uint32_t  dst_ip
+          0, // uint16_t  src_port
+          mcast_details.port // uint16_t  dst_port
+          )
+        ) {
+          hashpipe_error(thread_name, "create ibvpkt_flow for MCAST failed.");
+          errno = 0;
+          mcast_details.flag = MCAST_INACTIVE;
+        }
+        else {
+          hashpipe_info(
+            thread_name,
+            "create ibvpkt_flow for MCAST (@ %u = %u.%u.%u.%u:%u) succeeded.",
+            mcast_details.ip,
+            (mcast_details.ip >> 24)&255,
+            (mcast_details.ip >> 16)&255,
+            (mcast_details.ip >> 8)&255,
+            (mcast_details.ip >> 0)&255,
+            mcast_details.port
+          );
+        }
+      } else if (mcast_details.flag == MCAST_INACTIVE && hibv_ctx->ibv_flows[hibv_ctx->max_flows-1]) {
+        if (hpguppi_ibvpkt_flow(
+          db, // hpguppi_input_databuf_t *
+          hibv_ctx->max_flows-1, // flow_idx
+          IBV_FLOW_SPEC_UDP, //enum ibv_flow_spec_type flow_type
+          NULL, // uint8_t * dst_mac
+          NULL, // uint8_t * src_mac
+          0, // uint16_t  ether_type
+          0, // uint16_t  vlan_tag
+          0, // uint32_t  src_ip
+          0, // uint32_t  dst_ip
+          0, // uint16_t  src_port
+          0 // uint16_t  dst_port
+          )
+        ) {
+          hashpipe_error(thread_name, "destroy ibvpkt_flow for MCAST failed.");
+          errno = 0;
+          mcast_details.flag = MCAST_INACTIVE;
+        }
+        else {
+          hashpipe_info(thread_name, "destroy ibvpkt_flow for MCAST succeeded.");
+        }
+      }
+
     } // end periodic status buffer update
 
     // If no packets
