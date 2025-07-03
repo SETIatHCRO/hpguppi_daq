@@ -20,7 +20,7 @@
 
 #include "hpguppi_ata_blade_mode.h"
 
-#define N_BLADE_OUTPUT_BLOCKS 8
+#define N_BLADE_OUTPUT_BLOCKS 16
 
 typedef struct {
   char hdr[BLOCK_HDR_SIZE];

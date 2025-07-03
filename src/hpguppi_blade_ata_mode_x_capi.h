@@ -15,6 +15,7 @@ struct blade_ata_mode_x_config {
     uint32_t channelizerRate;
     uint32_t beamformerBeams;
     uint32_t integrationSize;
+    uint32_t frequencyIntegrationSize;
 
     uint32_t outputMemWidth;
     uint32_t outputMemPad;
@@ -35,6 +36,7 @@ static const struct blade_ata_mode_x_config BLADE_ATA_MODE_X_CONFIG = {
     BLADE_ATA_MODE_X_CHANNELIZER_RATE, // .channelizerRate
     1, // .beamformerBeams
     BLADE_ATA_MODE_X_INTEGRATION_SIZE, // .integrationSize
+    1, // .frequencyIntegrationSize
 
     BLADE_ATA_MODE_X_OUTPUT_MEMCPY2D_WIDTH, // .outputMemWidth
     BLADE_ATA_MODE_X_OUTPUT_MEMCPY2D_PAD, // .outputMemPad

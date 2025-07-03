@@ -40,7 +40,6 @@ static int safe_close(UVH5_file_t* uvh5_file) {
       uvh5_file->visdata = malloc(8);
     #endif
     // Close file
-    free(uvh5_file->header.object_name);
     UVH5close(uvh5_file);
     memset(uvh5_file, 0, sizeof(UVH5_file_t));
   }
@@ -67,6 +66,7 @@ static void *run(hashpipe_thread_args_t * args)
     hashpipe_error(thread_name, "Could not attach to input databuf #(%d).", args->input_buffer);
     return THREAD_ERROR;
   }
+  const size_t N_BLOCK = indb->header.n_block;
 
   /* Read in general parameters */
   struct hpguppi_params gp;
@@ -125,7 +125,8 @@ static void *run(hashpipe_thread_args_t * args)
   // Used to calculate moving average of fill-to-free times for input blocks
   uint64_t fill_to_free_elapsed_ns;
   uint64_t fill_to_free_moving_sum_ns = 0;
-  uint64_t fill_to_free_block_ns[N_XGPU_OUTPUT_BLOCKS] = {0};
+  uint64_t* fill_to_free_block_ns = malloc(N_BLOCK*sizeof(uint64_t));
+  memset(fill_to_free_block_ns, 0, N_BLOCK*sizeof(uint64_t));
   struct timespec ts_free_input = {0}, ts_block_recvd = {0};
   // struct timespec ts_section_start = {0}, ts_section_end = {0};
 
@@ -171,7 +172,7 @@ static void *run(hashpipe_thread_args_t * args)
               hputu8(st->buf, "OBSNDROP", ndrop_obs_current - ndrop_obs_start);
               hputu4(st->buf, "OBSBLKPS", blocks_per_second);
               hputr4(st->buf, "OBSBLKMS",
-                round((double)fill_to_free_moving_sum_ns / N_XGPU_OUTPUT_BLOCKS) / 1e6);
+                round((double)fill_to_free_moving_sum_ns / N_BLOCK) / 1e6);
               hputs(st->buf, "DAQPULSE", timestr);
               HPUT_DAQ_STATE(st, state);
           }
@@ -639,12 +640,13 @@ static void *run(hashpipe_thread_args_t * args)
     // Store new value
     fill_to_free_block_ns[curblock_in] = fill_to_free_elapsed_ns;
 
-    curblock_in  = (curblock_in + 1) % indb->header.n_block;
+    curblock_in  = (curblock_in + 1) % N_BLOCK;
 
     /* Will exit if thread has been cancelled */
     pthread_testcancel();
   }
 
+  free(fill_to_free_block_ns);
   hashpipe_info(thread_name, "exiting!");
   pthread_exit(NULL);
 

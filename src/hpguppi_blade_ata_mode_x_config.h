@@ -1,8 +1,9 @@
 #ifndef BLADE_ATA_MODE_X_CONFIG_H
 #define BLADE_ATA_MODE_X_CONFIG_H
 
-#define BLADE_ATA_MODE_X_INTEGRATION_SIZE 262144 // 1 mitigates the integration
-#define BLADE_ATA_MODE_X_CHANNELIZER_RATE 65536 // 1 mitigates the channelization
+#define BLADE_ATA_MODE_X_INTEGRATION_SIZE 262144 // just a fallback default
+#define BLADE_ATA_MODE_X_INTEGRATION_FACTOR 1
+#define BLADE_ATA_MODE_X_CHANNELIZER_RATE 16384 // 1 mitigates the channelization
 
 #define BLADE_ATA_MODE_X_INPUT_NANT 28
 #define BLADE_ATA_MODE_X_INPUT_NCOMPLEX_BYTES 2

@@ -721,6 +721,7 @@ void init_datablock_stats(struct datablock_stats *d,
 void block_stack_push(struct datablock_stats *d, int nblock);
 void finalize_block(struct datablock_stats *d);
 void increment_block(struct datablock_stats *d, int64_t block_num);
+int check_block_free_within(const struct datablock_stats* d, size_t* timeout_ns);
 void wait_for_block_free(const struct datablock_stats * d,
   hashpipe_status_t * st, const char * status_key);
 

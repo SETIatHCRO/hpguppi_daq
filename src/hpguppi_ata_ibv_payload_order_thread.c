@@ -40,7 +40,7 @@
 #include "hpguppi_pktbuf.h"
 
 #include <omp.h>
-#define ATA_IBV_FOR_PACKET_THREAD_COUNT 12
+#define ATA_IBV_FOR_PACKET_THREAD_COUNT 8
 #define ATA_IBV_TRANSPOSE_PACKET_THREAD_COUNT 1
 #define ATA_IBV_THREAD_COUNT ATA_IBV_FOR_PACKET_THREAD_COUNT*ATA_IBV_TRANSPOSE_PACKET_THREAD_COUNT
 
@@ -53,6 +53,76 @@
 #if 0
 #define memcpy_nt(dst,src,len) memcpy(dst,src,len)
 #endif
+
+static void increment_working_block_range(
+  char* datablock_header,
+  struct datablock_stats* wblk,
+  size_t* npacket_drop,
+  int* n_wblock_active,
+  int* rv,
+  const char * status_key,
+  hashpipe_status_t *st,
+  struct timespec* ts_check_free_limit,
+  const int n_wblock
+) {
+  // hashpipe_info(status_key, "Pushing block... active %d/%d", *n_wblock_active, n_wblock);
+  hputu8(datablock_header, "PKTIDX", wblk[0].packet_idx);
+  hputu8(datablock_header, "BLKSTART", wblk[0].packet_idx);
+  hputu8(datablock_header, "BLKSTOP", wblk[1].packet_idx);
+  // Finalize first working block
+  finalize_block(wblk);
+  // Update ndrop counter
+  (*npacket_drop) += wblk->ndrop;
+  // hashpipe_info(thread_name, "Block dropped %d packets.", wblk->ndrop);
+  // Shift working blocks
+  block_stack_push(wblk, n_wblock);
+  // Increment last working block
+  increment_block(&wblk[n_wblock-1], wblk[n_wblock-1].block_num + 1);
+
+  size_t timeout_ns = ts_check_free_limit->tv_nsec;
+  do {
+    // *rv = hpguppi_databuf_check_free(wblk[(*n_wblock_active)-1].dbout, wblk[(*n_wblock_active)-1].block_idx);
+    // *rv = hpguppi_databuf_wait_free_timeout(
+    //   wblk[(*n_wblock_active)-1].dbout,
+    //   wblk[(*n_wblock_active)-1].block_idx,
+    //   ts_check_free_limit
+    // );
+    
+    // hashpipe_info(status_key, "... checking block #%d availability within %lu ...", wblk[(*n_wblock_active)-1].block_idx, timeout_ns);
+    *rv = check_block_free_within(
+      &wblk[(*n_wblock_active)-1],
+      &timeout_ns
+    );
+    switch (*rv) {
+      case HASHPIPE_TIMEOUT:
+        // hashpipe_info(status_key, "... block #%d is not free (%d/%d) (pushed: %d)", wblk[(*n_wblock_active)-1].block_idx, *n_wblock_active, n_wblock, wblk[0].block_idx);
+        // next block is not free
+        if ((*n_wblock_active) == 3) {
+          // but there is no slack in the pipeline, must wait...
+          wait_for_block_free(&wblk[(*n_wblock_active)-1], st, status_key);
+        }
+        else {
+          // there are additional working blocks, take up slack
+          (*n_wblock_active) -= 1;
+        }
+        break;
+      case HASHPIPE_OK:
+        // hashpipe_info(status_key, "... block #%d is free!", wblk[(*n_wblock_active)-1].block_idx);
+        // next working block is free
+        if ((*n_wblock_active) < n_wblock) {
+          (*n_wblock_active) += 1;
+        }
+        break;
+
+      default:
+        hashpipe_error(status_key, "error waiting for free databuf (%d)", rv);
+        pthread_exit(NULL);
+        return;
+    }
+
+    // if block was easily free, repeat to regain slack
+  } while (*rv == HASHPIPE_OK && (*n_wblock_active) < n_wblock);
+}
 
 // This thread's init() function, if provided, is called by the Hashpipe
 // framework at startup to allow the thread to perform initialization tasks
@@ -255,7 +325,8 @@ int debug_i=0, debug_j=0;
   // wblk is a two element array of block_info structures (i.e. the working
   // blocks)
   int wblk_idx;
-  const int n_wblock = 14;
+  const int n_wblock = N_INPUT_BLOCKS;
+  int n_wblock_active = n_wblock;
   struct datablock_stats wblk[n_wblock];
   uint32_t *thread_wblk_pkt_count = malloc(ATA_IBV_FOR_PACKET_THREAD_COUNT*n_wblock*sizeof(uint32_t));
   memset(thread_wblk_pkt_count, 0, ATA_IBV_FOR_PACKET_THREAD_COUNT*n_wblock*sizeof(uint32_t));
@@ -268,7 +339,7 @@ int debug_i=0, debug_j=0;
   uint32_t antenna_byte_stride, channel_byte_stride, time_byte_stride;
 
   // Heartbeat variables
-  struct timespec ts_start_block = {0}, ts_stop_block = {0};
+  struct timespec ts_start_block = {0}, ts_stop_block = {0}, ts_check_free_limit = {0};
   struct timespec ts_checked_obs_info = {0}, ts_tried_obs_info = {0}, ts_now = {0};
   const uint64_t obs_info_refresh_period_ns = 200*1000*1000;
   const uint64_t obs_info_retry_period_s = 5;
@@ -285,7 +356,7 @@ int debug_i=0, debug_j=0;
   int32_t observation_complete=0;
 
   char flag_state_update = 0;
-  char  LATE_PKTIDX_flagged = 0;
+  char  LATE_PKTIDX_flagged = 0, EARLY_PKTIDX_flagged = 0, INACTIVE_PKTIDX_flagged = 0;
   char  PKT_OBS_FENG_flagged,
         PKT_OBS_SCHAN_flagged,
         PKT_OBS_NCHAN_flagged,
@@ -320,7 +391,7 @@ int debug_i=0, debug_j=0;
   //
   // ts_start_recv(N) to ts_stop_recv(N) is the time spent in the "receive" call.
   // ts_stop_recv(N) to ts_start_recv(N+1) is the time spent processing received data.
-  struct timespec ts_start_recv = {0}, ts_stop_recv = {0};
+  struct timespec ts_start_recv = {0}, ts_stop_recv = {0}, ts_last_recv = {0};
   struct timespec ts_free_input = {0};
 
   // Used to calculate moving average of fill-to-free times for input blocks
@@ -393,6 +464,9 @@ int debug_i=0, debug_j=0;
       // }
       rv = hpguppi_databuf_wait_filled_timeout(
           dbin, block_idx_in, &timeout_in);
+      if (rv == HASHPIPE_OK) {
+        memcpy(&ts_last_recv, &ts_stop_recv, sizeof(struct timespec));
+      }
       clock_gettime(CLOCK_MONOTONIC, &ts_stop_recv);
       memcpy(&ts_now, &ts_stop_recv, sizeof(struct timespec));
 
@@ -504,6 +578,13 @@ int debug_i=0, debug_j=0;
           hputr4(st->buf, "NETBLKPS", blocks_per_second);
           hputr4(st->buf, "NETBLKMS",
               round((double)fill_to_free_moving_sum_ns / N_INPUT_BLOCKS) / 1e6);
+          if (observation_complete) {
+            // when checking the availability of the next block,
+            // timeout in half the period of incoming block periodicity, as measured when idle
+            // ts_check_free_limit.tv_nsec = ts_last_recv.tv_nsec / 2;
+            // hashpipe_info(thread_name, "ts_check_free_limit: %ld ns", ts_check_free_limit.tv_nsec);
+            ts_check_free_limit.tv_nsec = 900000; // 0.9 ms
+          }
 
           buf_full = hpguppi_databuf_total_status(dbout);
           sprintf(buf_status, "%d/%d", buf_full, dbout->header.n_block);
@@ -576,7 +657,16 @@ int debug_i=0, debug_j=0;
 
       //TODO dont use pkt_blk_num due to underflow
       if(pkt_blk_num + 1 < wblk[0].block_num 
-        || pkt_blk_num > wblk[n_wblock-1].block_num + 1) {
+        || pkt_blk_num > wblk[n_wblock_active-1].block_num + 1) {
+          hashpipe_info(thread_name,
+            "Packet (slots per block: %lu): feng_id %d, nchan %d, schan %d",
+            slots_per_block, pkt_info.feng_id, pkt_info.pkt_nchan, pkt_info.pkt_schan
+          );
+          hashpipe_warn(thread_name,
+            "Packet's destination block number, %lu (pktidx %lu), is outside of the active working range: [%ld, %ld (/%ld)]... by %ld",
+            pkt_blk_num, pkt_info.pktidx,  wblk[0].block_num, wblk[n_wblock_active-1].block_num, wblk[n_wblock-1].block_num,
+            pkt_blk_num+1<wblk[0].block_num ? pkt_blk_num-wblk[0].block_num : pkt_blk_num-wblk[n_wblock_active-1].block_num
+          );
           if(!observing && observation_complete) {
             flag_reinit_blks = 1;
             blk0_start_seq_num = pkt_info.pktidx;
@@ -584,29 +674,26 @@ int debug_i=0, debug_j=0;
 
             // Should only happen when seeing first packet when obs_info is valid
             // warn in case it happens in other scenarios
-            hashpipe_warn(thread_name,
-                "working blocks reinit due to packet index out of working range\n\t\t(PKTIDX %lu) [%ld, %ld  <> %ld]",
-                pkt_info.pktidx, wblk[0].block_num - 1, wblk[n_wblock-1].block_num + 1, pkt_blk_num);
+            hashpipe_warn(thread_name, "... not observing so reinititialise working blocks.");
           }
           else { // observing and first packet's timestamp is out of working range
-            hashpipe_warn(thread_name, "rushing %d blocks...", pkt_blk_num - wblk[(n_wblock-1)/2].block_num);
-            n_blks_rushed += pkt_blk_num - wblk[(n_wblock-1)/2].block_num;
-            while(pkt_blk_num > wblk[(n_wblock-1)/2].block_num) { // only progress working range
+            size_t blocks_to_rush = pkt_blk_num - wblk[(n_wblock_active-1)/2].block_num;
+            hashpipe_warn(thread_name, "... busy observing so rushing %d blocks.", blocks_to_rush);
+            while (blocks_to_rush-- > 0) { // only progress working range
+              n_blks_rushed += 1;
               datablock_header = datablock_stats_header(&wblk[0]);
-              hputu8(datablock_header, "PKTIDX", wblk[0].packet_idx);
-              hputu8(datablock_header, "BLKSTART", wblk[0].packet_idx);
-              hputu8(datablock_header, "BLKSTOP", wblk[1].packet_idx);
-              // Finalize first working block
-              finalize_block(wblk);
-              // Update ndrop counter
-              npacket_drop += wblk->ndrop;
-              // hashpipe_info(thread_name, "Block dropped %d packets.", wblk->ndrop);
-              // Shift working blocks
-              block_stack_push(wblk, n_wblock);
-              // Increment last working block
-              increment_block(&wblk[n_wblock-1], wblk[n_wblock-1].block_num + 1);
-              // Wait for new databuf data block to be free
-              wait_for_block_free(&wblk[n_wblock-1], st, status_key);
+              hputu4(datablock_header, "RUSHBLKS", n_blks_rushed);
+              increment_working_block_range(
+                datablock_header,
+                wblk,
+                &npacket_drop,
+                &n_wblock_active,
+                &rv,
+                status_key,
+                st,
+                &ts_check_free_limit,
+                n_wblock
+              );
             }
           }
       }
@@ -632,6 +719,9 @@ int debug_i=0, debug_j=0;
         hashpipe_info(thread_name, "Working block range now has PKTIDX range [%ld, %ld)", wblk[0].packet_idx, wblk[n_wblock-1].packet_idx + obs_info.pktidx_per_block);
       }
 
+      LATE_PKTIDX_flagged = 0;
+      EARLY_PKTIDX_flagged = 0;
+      INACTIVE_PKTIDX_flagged = 0;
       // For each packet: process all packets
       #if ATA_IBV_FOR_PACKET_THREAD_COUNT > 1
         #pragma omp parallel for private (\
@@ -642,6 +732,8 @@ int debug_i=0, debug_j=0;
           pkt_blk_num,\
           wblk_idx,\
           LATE_PKTIDX_flagged,\
+          EARLY_PKTIDX_flagged,\
+          INACTIVE_PKTIDX_flagged,\
           dest_feng_pktidx_offset\
         )\
         firstprivate (p_u8pkt, obs_info, PKT_OBS_FENG_flagged, PKT_OBS_SCHAN_flagged, PKT_OBS_NCHAN_flagged, PKT_OBS_PKTNTIME_flagged, PKT_OBS_PKTIDX_flagged)\
@@ -683,7 +775,22 @@ int debug_i=0, debug_j=0;
             pkt_blk_num = pkt_info.pktidx / obs_info.pktidx_per_block;
             wblk_idx = pkt_blk_num - wblk[0].block_num;
 
-            if(0 <= wblk_idx && wblk_idx < n_wblock) {
+            if(wblk_idx < 0 && !LATE_PKTIDX_flagged)  {
+              LATE_PKTIDX_flagged = 1;
+              hashpipe_error(thread_name, "Late packet ignored: determined wblk_idx = %d", wblk_idx);
+            }
+            else if(n_wblock < wblk_idx && !EARLY_PKTIDX_flagged)  {
+              EARLY_PKTIDX_flagged = 1;
+              hashpipe_error(thread_name, "Early packet ignored: determined wblk_idx = +%d", wblk_idx-n_wblock);
+            }
+            else if(n_wblock_active < wblk_idx && !INACTIVE_PKTIDX_flagged)  {
+              INACTIVE_PKTIDX_flagged = 1;
+              hashpipe_error(thread_name,
+                "Inactive-block's packet ignored: determined wblk_idx = %d > %d active blocks",
+                wblk_idx, n_wblock_active
+              );
+            }
+            else if (0 <= wblk_idx && wblk_idx < n_wblock_active) {
               // Copy packet data to data buffer of working block
               dest_feng_pktidx_offset = ((PKT_PAYLOAD_CP_T*)
                 datablock_stats_data(wblk+wblk_idx))
@@ -704,12 +811,12 @@ int debug_i=0, debug_j=0;
               // Count packet for block and for processing stats
               thread_wblk_pkt_count[(omp_get_thread_num()*n_wblock) + wblk_idx] += 1;
             }
-            else if(!LATE_PKTIDX_flagged){
-              // Happens on the first packet that is outside of wblks' scope,
-              // or if a packet arrives late, consider n_wblock++
-              LATE_PKTIDX_flagged = 1;
-              hashpipe_error(thread_name, "Packet ignored: determined wblk_idx = %d", wblk_idx);
-            }
+            // else {
+            //   hashpipe_error(thread_name,
+            //     "WHAT: %d (active %d)",
+            //     wblk_idx, n_wblock_active
+            //   );
+            // }
             break;
           case PKT_OBS_FENG:
             if(!PKT_OBS_FENG_flagged){
@@ -825,7 +932,15 @@ int debug_i=0, debug_j=0;
     }
     hashpipe_status_unlock_safe(st);
     
-    if(wblk[n_wblock-1].npacket > 0) {
+    // while(wblk[0].npacket == wblk[0].pkts_per_block  || wblk[n_wblock-n_wblock_margin].npacket > 0) {
+    rv = HASHPIPE_OK;
+    while(
+      rv == HASHPIPE_OK
+      && (
+        wblk[0].npacket == wblk[0].pkts_per_block
+        || wblk[n_wblock_active-1].npacket > 0
+      )
+    ) {
       // Time to advance the blocks!!!
       clock_gettime(CLOCK_MONOTONIC, &ts_stop_block);
 
@@ -833,20 +948,17 @@ int debug_i=0, debug_j=0;
       hashpipe_status_lock_safe(st);
         memcpy(datablock_header, st->buf, HASHPIPE_STATUS_TOTAL_SIZE);
       hashpipe_status_unlock_safe(st);
-      hputu8(datablock_header, "PKTIDX", wblk[0].packet_idx);
-      hputu8(datablock_header, "BLKSTART", wblk[0].packet_idx);
-      hputu8(datablock_header, "BLKSTOP", wblk[1].packet_idx);
-      // Finalize first working block
-      finalize_block(wblk);
-      // Update ndrop counter
-      npacket_drop += wblk->ndrop;
-      // hashpipe_info(thread_name, "Block dropped %d packets.", wblk->ndrop);
-      // Shift working blocks
-      block_stack_push(wblk, n_wblock);
-      // Increment last working block
-      increment_block(&wblk[n_wblock-1], wblk[n_wblock-1].block_num + 1);
-      // Wait for new databuf data block to be free
-      wait_for_block_free(&wblk[n_wblock-1], st, status_key);
+      increment_working_block_range(
+        datablock_header,
+        wblk,
+        &npacket_drop,
+        &n_wblock_active,
+        &rv,
+        status_key,
+        st,
+        &ts_check_free_limit,
+        n_wblock
+      );
 
       blocks_per_second = 1e9/ELAPSED_NS(ts_start_block,ts_stop_block);
       clock_gettime(CLOCK_MONOTONIC, &ts_start_block);

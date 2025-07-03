@@ -21,7 +21,7 @@ class ModeXRunner : public Runner {
         ArrayShape outputShape;
     };
 
-    explicit ModeXRunner(const Config& config, U64 channelizationRate, U64 integrationRate)
+    explicit ModeXRunner(const Config& config, U64 channelizationRate, U64 integrationRate, U64 frequencyIntegrationRate)
         : inputBuffer(config.inputShape),
           outputBuffer(config.outputShape)
     {
@@ -32,7 +32,7 @@ class ModeXRunner : public Runner {
                 throw Result::ASSERTION_ERROR;
             }
             if (channelizationRate%config.inputShape.numberOfTimeSamples() != 0) {
-                BL_FATAL("Channelizer rate must be a multiple of NTIME: {}%{} !=0.", channelizationRate, config.inputShape.numberOfTimeSamples());
+                BL_FATAL("Channelizer rate must be a multiple of NTIME: {}%{} != 0.", channelizationRate, config.inputShape.numberOfTimeSamples());
                 throw Result::ASSERTION_ERROR;
             }
         }
@@ -44,20 +44,27 @@ class ModeXRunner : public Runner {
         // further integration happens thereafter to reach integrationRate
         U64 preCorrelatorStackerRate = contiuumNotSpectral ? 1 : channelizationRate/config.inputShape.numberOfTimeSamples();
         U64 correlatorIntegrationRate = contiuumNotSpectral ? integrationRate/config.inputShape.numberOfTimeSamples() : integrationRate;
+        if (correlatorIntegrationRate % BLADE_ATA_MODE_X_INTEGRATION_FACTOR != 0) {
+            BL_FATAL("Correlator integration rate must be a multiple of INTEGRATION_FACTOR: {}%{} != 0.", correlatorIntegrationRate, BLADE_ATA_MODE_X_INTEGRATION_FACTOR);
+            throw Result::ASSERTION_ERROR;
+        }
 
         ModeX::Config cfg = {
             .inputShape = config.inputShape,
             .outputShape = config.outputShape,
-
-            .preCorrelatorStackerMultiplier = preCorrelatorStackerRate,
+            .preChannelizerStackerMultiplier = 1,
             .channelizerBypass = contiuumNotSpectral,
             
-            .correlatorIntegrationRate = correlatorIntegrationRate,
+            .preCorrelatorStackerMultiplier = BLADE_ATA_MODE_X_INTEGRATION_FACTOR,
+            .correlatorIntegrationRate = correlatorIntegrationRate/BLADE_ATA_MODE_X_INTEGRATION_FACTOR,
             .correlatorConjugateAntennaIndex = BLADE_ATA_MODE_X_CONJUGATION_INDEX,
 
-            .correlatorUseSharedMemory = contiuumNotSpectral,
-            .correlatorCalculationMode = contiuumNotSpectral ? CALC_MODE::INTEGER : CALC_MODE::DOUBLE_PRECISION_FP,
-            .correlatorBlockSize = contiuumNotSpectral ? 64 : 32
+            .correlatorUseSharedMemory = false, //contiuumNotSpectral,
+            .correlatorCalculationMode = CALC_MODE::INTEGER, // contiuumNotSpectral ? CALC_MODE::INTEGER : CALC_MODE::DOUBLE_PRECISION_FP,
+            
+            .postCorrelatorFrequencyIntegrationRate = frequencyIntegrationRate, // TODO support repeated integrations...
+
+            .correlatorBlockSize = contiuumNotSpectral ? (U64) 64 : (U64) 32
         };
         this->connect(
             pipeline,
@@ -66,6 +73,7 @@ class ModeXRunner : public Runner {
                 .buffer = inputBuffer
             }
         );
+        this->compile();
     }
 
 
@@ -148,7 +156,7 @@ bool blade_ata_x_initialize(
 
     State.outputShape = ArrayShape({
         ata_x_config.inputDims.NANTS*(ata_x_config.inputDims.NANTS+1)/2,
-        ata_x_config.inputDims.NCHANS*ata_x_config.channelizerRate,
+        ata_x_config.inputDims.NCHANS*ata_x_config.channelizerRate/ata_x_config.frequencyIntegrationSize,
         1,
         ata_x_config.inputDims.NPOLS * ata_x_config.inputDims.NPOLS,
     });
@@ -160,7 +168,8 @@ bool blade_ata_x_initialize(
     State.pipelineRunner = std::make_shared<ModeXRunner>(
         config,
         ata_x_config.channelizerRate,
-        ata_x_config.integrationSize
+        ata_x_config.integrationSize,
+        ata_x_config.frequencyIntegrationSize
     );
 
     State.enqueueCount = 0;
@@ -311,6 +320,12 @@ bool blade_ata_x_compute_step() {
             // return State.pipelineRunner->transferIn(State.debugInput);
             return State.pipelineRunner->transferIn(input);
         };
+        auto transferCallback = [&](){
+            void* recycleBuffer_input = State.InputPointerMap[bufferId_input];
+            State.Callbacks.InputBufferReady(State.UserData, recycleBuffer_input, bufferId_input);
+            State.InputPointerMap.erase(bufferId_input);
+            return Result::SUCCESS;
+        };
         auto resultCallback = [&](){
             return State.pipelineRunner->transferResult();
         };
@@ -318,51 +333,35 @@ bool blade_ata_x_compute_step() {
             return State.pipelineRunner->transferOut(output);
         };
 
-        if ( Result::SUCCESS !=
-            State.pipelineRunner->enqueue(inputCallback, resultCallback, outputCallback, bufferId_input, State.bufferId_output)
-        ) {
-            // Dequeue last runner job and recycle output buffer.
-            State.pipelineRunner->dequeue(
-                [&](
-                    const U64& inputId, 
-                    const U64& outputId,
-                    const bool& didOutput
-                ){
-                    void* recycleBuffer_input = State.InputPointerMap[inputId];
-                    State.Callbacks.InputBufferReady(State.UserData, recycleBuffer_input, inputId);
-                    State.InputPointerMap.erase(inputId);
+        // Dequeue last runner job and recycle output buffer.
+        // only blocks if queue is full which would cause enqueue failure anyway...
+        State.pipelineRunner->dequeue(
+            [&](
+                const U64& inputId, 
+                const U64& outputId,
+                const bool& didOutput
+            ){
+                // void* recycleBuffer_input = State.InputPointerMap[inputId];
+                // State.Callbacks.InputBufferReady(State.UserData, recycleBuffer_input, inputId);
+                // State.InputPointerMap.erase(inputId);
 
-                    if (didOutput) { // should assert this really
-                        void* recycleBuffer_output = State.OutputPointerMap[outputId];
-                        State.Callbacks.OutputBufferReady(State.UserData, recycleBuffer_output, outputId);
-                        State.OutputPointerMap.erase(outputId);
-                    }
-                    return Result::SUCCESS;
+                if (didOutput) { // should assert this really
+                    void* recycleBuffer_output = State.OutputPointerMap[outputId];
+                    State.Callbacks.OutputBufferReady(State.UserData, recycleBuffer_output, outputId);
+                    State.OutputPointerMap.erase(outputId);
                 }
-            );
-            State.pipelineRunner->enqueue(inputCallback, resultCallback, outputCallback, bufferId_input, State.bufferId_output);// should assert or something
+                return Result::SUCCESS;
+            }
+        );
+
+        if ( Result::SUCCESS !=
+            State.pipelineRunner->enqueue(inputCallback, transferCallback, resultCallback, outputCallback, bufferId_input, State.bufferId_output)
+        ) {
+            BL_FATAL("Could not enqueue block #{}!", bufferId_input);
         }
         // Asynchronous CPU work
-        State.Callbacks.InputBufferEnqueued(State.UserData, bufferId_input, State.bufferId_output);
+        State.Callbacks.InputBufferEnqueued(State.UserData, bufferId_input, State.bufferId_output);        
     }
-    // else {
-    //     // Dequeue last runner job and recycle output buffer.
-    //     State.pipelineRunner->dequeue(
-    //         [&](
-    //             const U64& inputId, 
-    //             const U64& outputId,
-    //             const bool& didOutput
-    //         ){
-    //             if (didOutput) {
-    //                 void* recycleBuffer_output = State.OutputPointerMap[outputId];
-    //                 State.Callbacks.OutputBufferReady(State.UserData, recycleBuffer_output, outputId);
-    //                 State.OutputPointerMap.erase(outputId);
-    //                 return Result::SUCCESS;
-    //             }
-    //             return Result::ERROR;
-    //         }
-    //     );
-    // }
 
 
     // Return buffer was queued.

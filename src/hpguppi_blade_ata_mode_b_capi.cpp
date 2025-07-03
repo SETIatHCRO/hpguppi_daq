@@ -358,6 +358,12 @@ bool blade_ata_b_compute_step() {
         auto inputCallback = [&](){
             return State.pipelineRunner->transferIn(input);
         };
+        auto transferCallback = [&](){
+            void* recycleBuffer_input = State.InputPointerMap[bufferId_input];
+            State.Callbacks.InputBufferReady(State.UserData, recycleBuffer_input, bufferId_input);
+            State.InputPointerMap.erase(bufferId_input);
+            return Result::SUCCESS;
+        };
         auto resultCallback = [&](){
             return State.pipelineRunner->transferResult();
         };
@@ -366,7 +372,7 @@ bool blade_ata_b_compute_step() {
         };
 
         if ( Result::SUCCESS !=
-            State.pipelineRunner->enqueue(inputCallback, resultCallback, outputCallback, bufferId_input, State.bufferId_output)
+            State.pipelineRunner->enqueue(inputCallback, transferCallback, resultCallback, outputCallback, bufferId_input, State.bufferId_output)
         ) {
             // Dequeue last runner job and recycle output buffer.
             State.pipelineRunner->dequeue(
@@ -375,10 +381,6 @@ bool blade_ata_b_compute_step() {
                     const U64& outputId,
                     const bool& didOutput
                 ){
-                    void* recycleBuffer_input = State.InputPointerMap[inputId];
-                    State.Callbacks.InputBufferReady(State.UserData, recycleBuffer_input, inputId);
-                    State.InputPointerMap.erase(inputId);
-
                     if (didOutput) { // should assert this really
                     
                         void* recycleBuffer_output = State.OutputPointerMap[outputId];
@@ -388,7 +390,7 @@ bool blade_ata_b_compute_step() {
                     return Result::SUCCESS;
                 }
             );
-            State.pipelineRunner->enqueue(inputCallback, resultCallback, outputCallback, bufferId_input, State.bufferId_output);// should assert or something
+            State.pipelineRunner->enqueue(inputCallback, transferCallback, resultCallback, outputCallback, bufferId_input, State.bufferId_output);// should assert or something
         }
         // Asynchronous CPU work
         State.Callbacks.InputBufferEnqueued(State.UserData, bufferId_input, State.bufferId_output);

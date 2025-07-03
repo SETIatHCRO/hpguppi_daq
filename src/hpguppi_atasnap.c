@@ -83,6 +83,38 @@ void increment_block(struct datablock_stats *d, int64_t block_num)
   reset_datablock_stats(d);
 }
 
+// Wait for a datablock_stats's databuf block to be free
+int check_block_free_within(
+    const struct datablock_stats * d,
+    size_t* timeout_ns
+) {
+  int rv;
+  size_t timeout_counts = 0, ns_elapsed = 0;
+  struct timespec timestamp_start = {0}, timestamp_stop = {0};
+  clock_gettime(CLOCK_MONOTONIC, &timestamp_start);
+
+  while (1) {
+    rv = hpguppi_databuf_check_free(d->dbout, d->block_idx);
+    clock_gettime(CLOCK_MONOTONIC, &timestamp_stop);
+    // size_t ns_elapsed = (((int64_t)timestamp_stop.tv_sec-timestamp_start.tv_sec)*1000000000+(timestamp_stop.tv_nsec-timestamp_start.tv_nsec));
+    ns_elapsed = (((int64_t)timestamp_stop.tv_sec-timestamp_start.tv_sec)*1000000000+(timestamp_stop.tv_nsec-timestamp_start.tv_nsec));
+
+    if (rv==HASHPIPE_TIMEOUT) {
+      timeout_counts += 1;
+      if (*timeout_ns < ns_elapsed) {
+        *timeout_ns = 0;
+        break;
+      }
+    }
+    else {
+      *timeout_ns -= ns_elapsed;
+      break;
+    }
+  }
+
+  return rv;
+}
+
 // Wait for a datablock_stats's databuf block to be free, then copy status buffer to
 // block's header and clear block's data.  Calling thread will exit on error
 // (should "never" happen).  Status buffer updates made after the copy to the
@@ -134,10 +166,10 @@ void wait_for_block_free(const struct datablock_stats * d,
     }
   }
   clock_gettime(CLOCK_MONOTONIC, &timestamp_stop);
-  // int64_t ns_elapsed = (((int64_t)timestamp_stop.tv_sec-timestamp_start.tv_sec)*1000000000+(timestamp_stop.tv_nsec-timestamp_start.tv_nsec));
+  int64_t ns_elapsed = (((int64_t)timestamp_stop.tv_sec-timestamp_start.tv_sec)*1000000000+(timestamp_stop.tv_nsec-timestamp_start.tv_nsec));
   if (timeout_counts != 0) {
-    // hashpipe_warn(status_key,
-    //     "blocked waiting (%d timeouts) for free databuf #%d (%s full) for %lu ns.", timeout_counts, d->block_idx, netbuf_status, ns_elapsed);
+    hashpipe_warn(status_key,
+        "blocked waiting (%d timeouts) for free databuf #%d (%s full) for %lu ns.", timeout_counts, d->block_idx, netbuf_status, ns_elapsed);
   }
   // else {
   //   hashpipe_warn(status_key,
