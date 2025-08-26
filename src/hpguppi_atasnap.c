@@ -233,6 +233,41 @@ unsigned check_pkt_observability(
   return obs_code;
 }
 
+void set_stt_status_keys(
+  char *status_buf,
+  uint64_t pktidx,
+  struct mjd_t *mjd
+){
+  // uint32_t pktntime = ATASNAP_DEFAULT_PKTNTIME;
+  uint64_t synctime = 0;
+  double chan_bw = 1.0;
+
+  double realtime_secs = 0.0;
+  struct timespec ts;
+
+  // hgetu4(status_buf, "PKTNTIME", &pktntime);
+  hgetr8(status_buf, "CHAN_BW", &chan_bw);
+  hgetu8(status_buf, "SYNCTIME", &synctime);
+
+  // Calc real-time seconds since SYNCTIME for pktidx, taken to be a multiple of PKTNTIME:
+  //
+  //                          pktidx
+  //     realtime_secs = -------------------
+  //                        1e6 * chan_bw
+  if(chan_bw != 0.0) {
+    realtime_secs = pktidx / (1e6 * fabs(chan_bw));
+  }
+
+  ts.tv_sec = (time_t)(synctime + rint(realtime_secs));
+  ts.tv_nsec = (long)((realtime_secs - rint(realtime_secs)) * 1e9);
+
+  get_mjd_from_timespec(&ts, &(mjd->stt_imjd), &(mjd->stt_smjd), &(mjd->stt_offs));
+
+  hputu4(status_buf, "STT_IMJD", mjd->stt_imjd);
+  hputu4(status_buf, "STT_SMJD", mjd->stt_smjd);
+  hputr8(status_buf, "STT_OFFS", mjd->stt_offs);
+}
+
 //  if state == RECORD && STTVALID == 0 
 //    STTVALID=1
 //    calculate and store STT_IMJD, STT_SMJD
@@ -243,12 +278,6 @@ uint32_t update_stt_status_keys( hashpipe_status_t *st,
                                     enum run_states state,
                                     uint64_t pktidx,
                                     struct mjd_t *mjd){
-  // uint32_t pktntime = ATASNAP_DEFAULT_PKTNTIME;
-  uint64_t synctime = 0;
-  double chan_bw = 1.0;
-
-  double realtime_secs = 0.0;
-  struct timespec ts;
 
   uint32_t sttvalid = 0;
   hashpipe_status_lock_safe(st);
@@ -256,28 +285,11 @@ uint32_t update_stt_status_keys( hashpipe_status_t *st,
     hgetu4(st->buf, "STTVALID", &sttvalid);
     if((state == ARMED || state == RECORD) && sttvalid != 1) {
       sttvalid = 1;
-
-      // hgetu4(st->buf, "PKTNTIME", &pktntime);
-      hgetr8(st->buf, "CHAN_BW", &chan_bw);
-      hgetu8(st->buf, "SYNCTIME", &synctime);
-
-      // Calc real-time seconds since SYNCTIME for pktidx, taken to be a multiple of PKTNTIME:
-      //
-      //                          pktidx
-      //     realtime_secs = -------------------
-      //                        1e6 * chan_bw
-      if(chan_bw != 0.0) {
-        realtime_secs = pktidx / (1e6 * fabs(chan_bw));
-      }
-
-      ts.tv_sec = (time_t)(synctime + rint(realtime_secs));
-      ts.tv_nsec = (long)((realtime_secs - rint(realtime_secs)) * 1e9);
-
-      get_mjd_from_timespec(&ts, &(mjd->stt_imjd), &(mjd->stt_smjd), &(mjd->stt_offs));
-
-      hputu4(st->buf, "STT_IMJD", mjd->stt_imjd);
-      hputu4(st->buf, "STT_SMJD", mjd->stt_smjd);
-      hputr8(st->buf, "STT_OFFS", mjd->stt_offs);
+      set_stt_status_keys(
+        st->buf,
+        pktidx,
+        mjd
+      );
     }
     else if(state == IDLE && sttvalid != 0) {
       sttvalid = 0;

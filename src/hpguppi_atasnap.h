@@ -760,6 +760,12 @@ unsigned check_pkt_observability_silent(
     const struct ata_snap_pkt_info *pkt_info
   );
 
+void set_stt_status_keys(
+  char *status_buf,
+  uint64_t pktidx,
+  struct mjd_t *mjd
+  );
+
 uint32_t update_stt_status_keys( hashpipe_status_t *st,
                                     enum run_states state,
                                     uint64_t pktidx,

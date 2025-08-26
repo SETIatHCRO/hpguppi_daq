@@ -9,8 +9,23 @@
 #include "hashpipe.h"
 #include "hpguppi_time.h"
 #include "hpguppi_databuf.h"
-#include "hpguppi_ata_blade_mode.h"
+
+#include "hpguppi_blade_capi.h"
+
+#include "hpguppi_blade_ata_mode_a_config.h"
+#include "hpguppi_blade_ata_mode_a_capi.h"
+#include "hpguppi_blade_ata_mode_b_config.h"
+#include "hpguppi_blade_ata_mode_b_capi.h"
+#include "hpguppi_blade_ata_mode_h_config.h"
+#include "hpguppi_blade_ata_mode_h_capi.h"
+#include "hpguppi_blade_ata_mode_x_config.h"
+#include "hpguppi_blade_ata_mode_x_capi.h"
+#include "hpguppi_blade_ata_mode_k_config.h"
+#include "hpguppi_blade_ata_mode_k_capi.h"
+
 #include "hpguppi_blade_databuf.h"
+#include "hpguppi_atasnap.h"
+#include "hpguppi_params.h"
 
 #include "uvh5/uvh5_toml.h"
 #include "radiointerferometryc99.h"
@@ -21,7 +36,8 @@ enum blade_mode_t {
   BLADE_MODE_A,
   BLADE_MODE_B,
   BLADE_MODE_H,
-  BLADE_MODE_X
+  BLADE_MODE_X,
+  BLADE_MODE_K
 };
 
 typedef struct {
@@ -51,12 +67,11 @@ typedef struct {
     hpguppi_input_databuf_t* in;
     hpguppi_blade_output_databuf_t* out;
 
-    void* out_intermediary[N_BLADE_OUTPUT_BLOCKS];
-
     uint64_t fill_to_free_moving_sum_ns;
     uint64_t fill_to_free_block_ns[N_INPUT_BLOCKS];
     struct timespec ts_blocks_recvd[N_INPUT_BLOCKS];
 
+    struct blade_ata_input_dims inputDims;
     enum blade_mode_t mode;
     void* mode_config;
 } blade_userdata_t;
@@ -96,8 +111,7 @@ double jd_mid_block(char* databuf_header) {
 }
 
 // Populates `beam_coordinates` which should be nbeams*2 long (RA/DEC_OFFX pairs)
-void collect_beamCoordinates(
-  int nbeams,
+int collect_beamCoordinates(
   double* beam_coordinates,
   double* phase_center,
   char* databuf_header
@@ -109,10 +123,10 @@ void collect_beamCoordinates(
   phase_center[0] = calc_rad_from_degree(phase_center[0]* 360.0 / 24.0); // convert from hours to degrees
   phase_center[1] = calc_rad_from_degree(phase_center[1]);
 
-
   // Getting beam coordinates
   char coordkey[9] = "DEC_OFFX";
-  for(int beam_idx = 0; beam_idx < nbeams; beam_idx++) {
+  int beam_idx;
+  for(beam_idx = 0; beam_idx < 10; beam_idx++) {
     sprintf(coordkey, "RA_OFF%d", beam_idx%10);
     hgetr8(databuf_header, coordkey, beam_coordinates+beam_idx*2+0);
     beam_coordinates[beam_idx*2+0] = calc_rad_from_degree(beam_coordinates[beam_idx*2+0] * 360.0 / 24.0);
@@ -121,6 +135,7 @@ void collect_beamCoordinates(
     hgetr8(databuf_header, coordkey, beam_coordinates+beam_idx*2+1);
     beam_coordinates[beam_idx*2+1] = calc_rad_from_degree(beam_coordinates[beam_idx*2+1]);
   }
+  return beam_idx;
 }
 
 typedef struct
@@ -150,6 +165,56 @@ void* blade_input_buffer_ignore_loop(void* user_data_void) {
   } 
 }
 
+void read_kurtosis_paramters(
+  const char* thread_name,
+  char* databuf_header,
+  int* kurtosisSigma,
+  uint32_t* kurtosisChannelLength,
+  uint32_t* kurtosisNumberOfMaskRuns,
+  char* kurtosisOutputFilepath
+) {
+    hgeti4(databuf_header, "KURTSIGM", kurtosisSigma);
+    if (*kurtosisSigma < 0) {
+      return;
+    }
+    hgetu4(databuf_header, "KURTCHNL", kurtosisChannelLength);
+    hgetu4(databuf_header, "KURTMSKR", kurtosisNumberOfMaskRuns);
+
+    if (*kurtosisSigma > 5) {
+      hashpipe_info(thread_name, "Limited Kurtosis Sigma to 5 from %d.", *kurtosisSigma);
+      *kurtosisSigma = 5;
+    }
+    else if (*kurtosisSigma < 3) {
+      hashpipe_info(thread_name, "Raised Kurtosis Sigma to 3 from %d.", *kurtosisSigma);
+      *kurtosisSigma = 3;
+    }
+
+    // mimic the output filepath determination of output threads
+    /* Read in general parameters */
+    struct hpguppi_params gp;
+    struct psrfits pf;
+    uint64_t obs_start_pktidx = 0;
+    hgetu8(databuf_header, "PKTSTART", &obs_start_pktidx);
+    struct mjd_t mjd = {0};
+    set_stt_status_keys(
+      databuf_header,
+      obs_start_pktidx,
+      &mjd
+    );
+    hpguppi_read_obs_params(databuf_header, &gp, &pf);
+    sprintf(
+      kurtosisOutputFilepath,
+      "%s.kurtosismask.bin",
+      pf.basefilename
+    );
+      
+    pf.sub.dat_freqs = NULL;
+    pf.sub.dat_weights = NULL;
+    pf.sub.dat_offsets = NULL;
+    pf.sub.dat_scales = NULL;
+    // pthread_cleanup_push((void *)hpguppi_free_psrfits, &pf); // TODO free psrfits
+}
+
 void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
   
   // called if first block of observation
@@ -160,7 +225,7 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
 
 
   UVH5_header_t uvh5_header = {0};
-  char blade_mode;
+  char blade_mode[2] = {'\0'};
   char tel_info_toml_filepath[70] = {'\0'};
   // char obs_info_toml_filepath[70] = {'\0'};
   char reference_antenna_name[70] = {'\0'};
@@ -171,7 +236,7 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
   int npols;
   UVH5_inputpair_t* inputpairs;
   int inputpairs_index;
-  double obs_antenna_positions[BLADE_ATA_INPUT_NANT*3] = {0}, obs_beam_coordinates[BLADE_ATA_OUTPUT_NBEAM*2] = {0};
+  double obs_antenna_positions[N_INPUT_ASPECTS*3] = {0}, obs_beam_coordinates[10*2] = {0};
   double obs_phase_center[2] = {0};
   struct blade_ata_observation_meta observationMetaData = {0};
   struct LonLatAlt arrayReferencePosition = {0};
@@ -179,6 +244,8 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
   double _Complex* antenna_calibration_coeffs;
   char obs_antenna_calibration_filepath[70] = {'\0'};
   char** obs_antenna_names = NULL;
+    
+  int kurtosisSigma = 3;
 
   int fenchan;
   hgetu8(databuf_header, "SCHAN", &observationMetaData.frequencyStartIndex);
@@ -187,7 +254,7 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
   hgetr8(databuf_header, "OBSFREQ", &observationMetaData.rfFrequencyHz);
 
   double tmp = (double)observationMetaData.rfFrequencyHz +
-    (-(double)observationMetaData.frequencyStartIndex - ((double)BLADE_ATA_CONFIG.inputDims.NCHANS / 2.0)
+    (-(double)observationMetaData.frequencyStartIndex - ((double)user_data->inputDims.NCHANS / 2.0)
       + ((double)fenchan / 2.0) + 0.5
     ) * (double)observationMetaData.channelBandwidthHz;
 
@@ -200,15 +267,14 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
 
   hashpipe_status_lock_safe(user_data->status);
   {
-    hgets(user_data->status->buf, "BLADEMOD", 1, &blade_mode);
+    hgets(user_data->status->buf, "BLADEMOD", 1, blade_mode);
     hgets(user_data->status->buf, "TELINFOP", 70, tel_info_toml_filepath);
     hgets(user_data->status->buf, "REFANTNM", 70, reference_antenna_name);
     // hgets(user_data->status->buf, "OBSINFOP", 70, obs_info_toml_filepath);
     hgets(user_data->status->buf, "CALWGHTP", 70, obs_antenna_calibration_filepath);
 
-    #if BLADE_ATA_MODE == BLADE_ATA_MODE_X
     enum blade_mode_t blade_mode_next;
-    switch (blade_mode) {
+    switch (blade_mode[0]) {
       case 'A':
         blade_mode_next = BLADE_MODE_A;
         break;
@@ -218,9 +284,14 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
       case 'H':
         blade_mode_next = BLADE_MODE_H;
         break;
+      case 'K':
+        blade_mode_next = BLADE_MODE_K;
+        break;
       case 'X':
-      default:
         blade_mode_next = BLADE_MODE_X;
+        break;
+      default:
+        hashpipe_error(user_data->thread_name, "Unhandled next BLADE mode character: '%s'!", blade_mode);
     }
     
     if (user_data->mode_config && user_data->mode != blade_mode_next) {
@@ -242,8 +313,12 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
           hashpipe_warn(user_data->thread_name, "freeing x_config...");
           free((struct blade_ata_mode_x_config*) user_data->mode_config);
           break;
+        case BLADE_MODE_K:
+          hashpipe_warn(user_data->thread_name, "freeing k_config...");
+          free((struct blade_ata_mode_k_config*) user_data->mode_config);
+          break;
         default:
-          hashpipe_warn(user_data->thread_name, "unknown existing config, ignoring...");
+          hashpipe_error(user_data->thread_name, "unknown existing config, ignoring...");
           user_data->mode_config = NULL;
           // free((struct blade_ata_mode_x_config*) user_data->mode_config);
           break;
@@ -251,29 +326,61 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
       user_data->mode = BLADE_MODE_UNKNOWN;
     }
     switch (blade_mode_next) {
-      // case BLADE_MODE_A:
-      //   if (user_data->mode == BLADE_MODE_UNKNOWN) {
-      //     user_data->mode_config = malloc(sizeof(struct blade_ata_mode_a_config));
-      //   }
-      //   user_data->mode = BLADE_MODE_A;
-      //   memcpy(user_data->mode_config,& BLADE_ATA_MODE_A_CONFIG, sizeof(struct blade_ata_mode_a_config));
-      //   break;
-      // case BLADE_MODE_B:
-      //   if (user_data->mode == BLADE_MODE_UNKNOWN) {
-      //     user_data->mode_config = malloc(sizeof(struct blade_ata_mode_b_config));
-      //   }
-      //   user_data->mode = BLADE_MODE_B;
-      //   memcpy(user_data->mode_config, &BLADE_ATA_MODE_B_CONFIG, sizeof(struct blade_ata_mode_b_config));
-      //   break;
-      // case BLADE_MODE_H:
-      //   if (user_data->mode == BLADE_MODE_UNKNOWN) {
-      //     user_data->mode_config = malloc(sizeof(struct blade_ata_mode_c_config));
-      //   }
-      //   user_data->mode = BLADE_MODE_H;
-      //   memcpy(user_data->mode_config, &BLADE_ATA_MODE_H_CONFIG, sizeof(struct blade_ata_mode_c_config));
-      //   break;
+      case BLADE_MODE_A:
+        if (user_data->mode == BLADE_MODE_UNKNOWN) {
+          user_data->mode_config = malloc(sizeof(struct blade_ata_mode_a_config));
+        }
+        user_data->mode = BLADE_MODE_A;
+        memcpy(user_data->mode_config, &BLADE_ATA_MODE_A_CONFIG, sizeof(struct blade_ata_mode_a_config));
+        
+        kurtosisSigma = -1;
+        read_kurtosis_paramters(
+          user_data->thread_name,
+          databuf_header,
+          &kurtosisSigma,
+          &(((struct blade_ata_mode_a_config*) user_data->mode_config)->kurtosisChannelLength),
+          &(((struct blade_ata_mode_a_config*) user_data->mode_config)->kurtosisNumberOfMaskRuns),
+          ((struct blade_ata_mode_a_config*) user_data->mode_config)->kurtosisMaskOutputFilepath
+        );
+        ((struct blade_ata_mode_a_config*) user_data->mode_config)->kurtosisEnabled = kurtosisSigma >= 0;
+        ((struct blade_ata_mode_a_config*) user_data->mode_config)->kurtosisSigma = kurtosisSigma;
+
+        break;
+      case BLADE_MODE_B:
+        if (user_data->mode == BLADE_MODE_UNKNOWN) {
+          user_data->mode_config = malloc(sizeof(struct blade_ata_mode_b_config));
+        }
+        user_data->mode = BLADE_MODE_B;
+        memcpy(user_data->mode_config, &BLADE_ATA_MODE_B_CONFIG, sizeof(struct blade_ata_mode_b_config));
+        break;
+      case BLADE_MODE_H:
+        if (user_data->mode == BLADE_MODE_UNKNOWN) {
+          user_data->mode_config = malloc(sizeof(struct blade_ata_mode_h_config));
+        }
+        user_data->mode = BLADE_MODE_H;
+        memcpy(user_data->mode_config, &BLADE_ATA_MODE_H_CONFIG, sizeof(struct blade_ata_mode_h_config));
+        break;
+      
+      case BLADE_MODE_K:
+        // if (user_data->mode == BLADE_MODE_UNKNOWN) {
+        if (user_data->mode_config == NULL) {
+          user_data->mode_config = malloc(sizeof(struct blade_ata_mode_k_config));
+        }
+        user_data->mode = BLADE_MODE_K;
+        memcpy(user_data->mode_config, &BLADE_ATA_MODE_K_CONFIG, sizeof(struct blade_ata_mode_k_config));
+
+        read_kurtosis_paramters(
+          user_data->thread_name,
+          databuf_header,
+          &kurtosisSigma,
+          &(((struct blade_ata_mode_k_config*) user_data->mode_config)->kurtosisChannelLength),
+          &(((struct blade_ata_mode_k_config*) user_data->mode_config)->kurtosisNumberOfMaskRuns),
+          ((struct blade_ata_mode_k_config*) user_data->mode_config)->kurtosisMaskOutputFilepath
+        );
+        ((struct blade_ata_mode_k_config*) user_data->mode_config)->kurtosisEnabled = kurtosisSigma >= 0;
+        ((struct blade_ata_mode_k_config*) user_data->mode_config)->kurtosisSigma = kurtosisSigma;
+        break;
       case BLADE_MODE_X:
-      default:
         if (user_data->mode == BLADE_MODE_UNKNOWN) {
           user_data->mode_config = malloc(sizeof(struct blade_ata_mode_x_config));
         }
@@ -283,7 +390,7 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
         double corr_integration_time, tbin, corr_frequency_resolution;
         hgetr8(user_data->status->buf, "TBIN", &tbin);
         hashpipe_info(user_data->thread_name, "Fine-channel timespan = %lu * %f us = %f us.", BLADE_ATA_MODE_X_CONFIG.channelizerRate, tbin*1e6, BLADE_ATA_MODE_X_CONFIG.channelizerRate*tbin*1e6);
-        uint32_t ntime_process_step = BLADE_ATA_MODE_X_CONFIG.channelizerRate == 1 ? BLADE_ATA_MODE_X_CONFIG.inputDims.NTIME : BLADE_ATA_MODE_X_CONFIG.channelizerRate;
+        uint32_t ntime_process_step = BLADE_ATA_MODE_X_CONFIG.channelizerRate == 1 ? user_data->inputDims.NTIME : BLADE_ATA_MODE_X_CONFIG.channelizerRate;
 
         hashpipe_info(user_data->thread_name, "Default integration time = %lu * %f us.", BLADE_ATA_MODE_X_CONFIG.integrationSize, tbin*1e6);
         corr_integration_time = BLADE_ATA_MODE_X_CONFIG.integrationSize*tbin;
@@ -338,8 +445,9 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
         hputu4(user_data->status->buf, "XINTEGS", observation_integrations_rounded);
         hputu8(user_data->status->buf, "PKTSTOP", pktidx_obs_stop);
         break;
+      default:
+        hashpipe_info(user_data->thread_name, "Unhandled BLADE mode: %d!", user_data->mode);
     }
-    #endif
   }
   hashpipe_status_unlock_safe(user_data->status);
 
@@ -438,8 +546,7 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
   //   uvh5_header._antenna_numbers_data[0]
   // ];
 
-  collect_beamCoordinates(BLADE_ATA_OUTPUT_NBEAM,
-      obs_beam_coordinates, obs_phase_center, databuf_header);
+  /*int n_beams = */collect_beamCoordinates(obs_beam_coordinates, obs_phase_center, databuf_header);
   hashpipe_info(user_data->thread_name, "Parsing '%s' for antenna-weights information.", obs_antenna_calibration_filepath);
   if (
     read_antenna_weights(
@@ -447,7 +554,7 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
       uvh5_header.Nants_data, // number of antenna of interest
       obs_antenna_names, // the antenna of interest
       observationMetaData.frequencyStartIndex, // the first channel
-      BLADE_ATA_CONFIG.inputDims.NCHANS, // the number of channels
+      user_data->inputDims.NCHANS, // the number of channels
       &antenna_calibration_coeffs // return value
     )
   ) {
@@ -455,9 +562,9 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
     hashpipe_warn(user_data->thread_name, "CALWGHTP `%s` could not be opened. Using 1.0+0.0j.", obs_antenna_calibration_filepath);
     errno = 0;
     size_t size_of_calib =
-      BLADE_ATA_CONFIG.inputDims.NANTS*
-      BLADE_ATA_CONFIG.inputDims.NCHANS*
-      BLADE_ATA_CONFIG.inputDims.NPOLS;
+      user_data->inputDims.NANTS*
+      user_data->inputDims.NCHANS*
+      user_data->inputDims.NPOLS;
     antenna_calibration_coeffs = malloc(size_of_calib*sizeof(double _Complex*));
 
     for(int i = 0; i < size_of_calib; i++) {
@@ -465,21 +572,57 @@ void blade_initialize(blade_userdata_t* user_data, char* databuf_header) {
     }
   }
 
-  blade_ata_terminate();
-  blade_ata_initialize(
-    #if BLADE_ATA_MODE == BLADE_ATA_MODE_X
-    *((struct blade_ata_mode_x_config*) user_data->mode_config),
-    #else
-    BLADE_ATA_CONFIG,
-    #endif
-    user_data->blade_number_of_workers,
-    &observationMetaData,
-    &arrayReferencePosition,
-    obs_phase_center,
-    obs_beam_coordinates,
-    obs_antenna_positions,
-    antenna_calibration_coeffs
-  );
+  blade_terminate();
+  switch (user_data->mode) {
+    case BLADE_MODE_A:
+      blade_ata_a_initialize(
+        *((struct blade_ata_mode_a_config*) user_data->mode_config),
+        user_data->blade_number_of_workers,
+        &observationMetaData,
+        &arrayReferencePosition,
+        obs_phase_center,
+        obs_beam_coordinates,
+        obs_antenna_positions,
+        antenna_calibration_coeffs
+      );
+      break;
+    case BLADE_MODE_B:
+      blade_ata_b_initialize(
+        *((struct blade_ata_mode_b_config*) user_data->mode_config),
+        user_data->blade_number_of_workers,
+        &observationMetaData,
+        &arrayReferencePosition,
+        obs_phase_center,
+        obs_beam_coordinates,
+        obs_antenna_positions,
+        antenna_calibration_coeffs
+      );
+      break;
+    case BLADE_MODE_H:
+      blade_ata_h_initialize(
+        *((struct blade_ata_mode_h_config*) user_data->mode_config),
+        user_data->blade_number_of_workers,
+        &observationMetaData,
+        &arrayReferencePosition,
+        obs_phase_center,
+        obs_beam_coordinates,
+        obs_antenna_positions,
+        antenna_calibration_coeffs
+      );
+      break;
+    case BLADE_MODE_K:
+      blade_ata_k_initialize(
+        *((struct blade_ata_mode_k_config*) user_data->mode_config)
+      );
+      break;
+    case BLADE_MODE_X:
+      blade_ata_x_initialize(
+        *((struct blade_ata_mode_x_config*) user_data->mode_config)
+      );
+      break;
+    case BLADE_MODE_UNKNOWN:
+      hashpipe_error(user_data->thread_name, "BLADE mode not known!");
+  }
 
   hashpipe_info(user_data->thread_name, "free obs_antenna_names");
   free(obs_antenna_names);
@@ -540,7 +683,7 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
 
   char* databuf_header = hpguppi_databuf_header(user_data->in, user_data->in_index);
 
-  {// validate apparent dimensions of data
+  {// push input dimensions of data
     int32_t input_buffer_dim_NANTS = 0;
     int32_t input_buffer_dim_NCHAN = 0;
     int32_t input_buffer_dim_NTIME = 0;
@@ -552,32 +695,32 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
     hgeti4(databuf_header, "PIPERBLK", &input_buffer_dim_NTIME);
     hgeti4(databuf_header, "NPOL", &input_buffer_dim_NPOLS);
 
-    if (input_buffer_dim_NANTS != BLADE_ATA_CONFIG.inputDims.NANTS) {
+    if (input_buffer_dim_NANTS != user_data->inputDims.NANTS) {
       indb_data_dims_good_flag = 0;
       if (user_data->prev_flagged_NANTS != input_buffer_dim_NANTS) {
         user_data->prev_flagged_NANTS = input_buffer_dim_NANTS;
-        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NANTS %lu != %lu. Ignored.\n", input_buffer_dim_NANTS, BLADE_ATA_CONFIG.inputDims.NANTS);
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NANTS %lu != %lu. Ignored.\n", input_buffer_dim_NANTS, user_data->inputDims.NANTS);
       }
     }
-    else if (input_buffer_dim_NCHAN != BLADE_ATA_CONFIG.inputDims.NCHANS) {
+    else if (input_buffer_dim_NCHAN != user_data->inputDims.NCHANS) {
       indb_data_dims_good_flag = 0;
       if (user_data->prev_flagged_NCHAN != input_buffer_dim_NCHAN) {
         user_data->prev_flagged_NCHAN = input_buffer_dim_NCHAN;
-        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NCHANS %lu != %lu. Ignored.\n", input_buffer_dim_NCHAN, BLADE_ATA_CONFIG.inputDims.NCHANS);
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NCHANS %lu != %lu. Ignored.\n", input_buffer_dim_NCHAN, user_data->inputDims.NCHANS);
       }
     }
-    else if (input_buffer_dim_NTIME != BLADE_ATA_CONFIG.inputDims.NTIME) {
+    else if (input_buffer_dim_NTIME != user_data->inputDims.NTIME) {
       indb_data_dims_good_flag = 0;
       if (user_data->prev_flagged_NTIME != input_buffer_dim_NTIME) {
         user_data->prev_flagged_NTIME = input_buffer_dim_NTIME;
-        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NTIME %lu != %lu. Ignored.\n", input_buffer_dim_NTIME, BLADE_ATA_CONFIG.inputDims.NTIME);
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NTIME %lu != %lu. Ignored.\n", input_buffer_dim_NTIME, user_data->inputDims.NTIME);
       }
     }
-    else if (input_buffer_dim_NPOLS != BLADE_ATA_CONFIG.inputDims.NPOLS) {
+    else if (input_buffer_dim_NPOLS != user_data->inputDims.NPOLS) {
       indb_data_dims_good_flag = 0;
       if (user_data->prev_flagged_NPOLS != input_buffer_dim_NPOLS) {
         user_data->prev_flagged_NPOLS = input_buffer_dim_NPOLS;
-        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NPOLS %lu != %lu. Ignored.\n", input_buffer_dim_NPOLS, BLADE_ATA_CONFIG.inputDims.NPOLS);
+        hashpipe_error(user_data->thread_name, "Incoming data_buffer has NPOLS %lu != %lu. Ignored.\n", input_buffer_dim_NPOLS, user_data->inputDims.NPOLS);
       }
     }
 
@@ -660,15 +803,15 @@ bool blade_cb_input_buffer_prefetch(void* user_data_void) {
 
     hashpipe_info(
       user_data->thread_name,
-      "Ignore-loop handeled %lu blocks during initialisation of BLADE (%0.3f ms).",
+      "Ignore-loop handled %lu blocks during initialisation of BLADE (%0.3f ms).",
       ignore_vals.count,
       (double)((int64_t)(ts_stop.tv_sec-ts_start.tv_sec)*1000*1000*1000+(ts_stop.tv_nsec-ts_start.tv_nsec))/1e6
     );
     user_data->in_index = ignore_vals.in_index;
     
     user_data->prev_pktidx_obs_start = pktidx_obs_start;
-    if (BLADE_BLOCK_DATA_SIZE < blade_ata_get_output_size()*BLADE_ATA_OUTPUT_ELEMENT_BYTES) {
-      hashpipe_error(user_data->thread_name, "BLADE_BLOCK_DATA_SIZE %lu <= %lu BLADE configured output size.", BLADE_BLOCK_DATA_SIZE, blade_ata_get_output_size()*BLADE_ATA_OUTPUT_ELEMENT_BYTES);
+    if (BLADE_BLOCK_DATA_SIZE < blade_get_output_byte_size()) {
+      hashpipe_error(user_data->thread_name, "BLADE_BLOCK_DATA_SIZE %lu <= %lu BLADE configured output size.", BLADE_BLOCK_DATA_SIZE, blade_get_output_byte_size());
       pthread_exit(NULL);
     }
     return false; // prefetch initialized BLADE and freed the block so pretend it didn't see a block
@@ -682,17 +825,32 @@ bool blade_cb_input_buffer_fetch(void* user_data_void, void** buffer, size_t* bu
 
   // prefetch callback has ascertained that the current buffer is filled... don't check again
 
-  #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
-  user_data->accumulator_counter = blade_ata_h_accumulator_counter();
-  #endif
+  if (user_data->mode == BLADE_MODE_H) {
+    user_data->accumulator_counter = blade_ata_h_accumulator_counter();
+  }
 
   *buffer = hpguppi_databuf_data(user_data->in, user_data->in_index);
   clock_gettime(CLOCK_MONOTONIC, &user_data->ts_blocks_recvd[user_data->in_index]);
 
-  blade_ata_set_block_time_mjd(jd_mid_block(hpguppi_databuf_header(user_data->in, user_data->in_index)));
+  double jd_mid_block_value = jd_mid_block(hpguppi_databuf_header(user_data->in, user_data->in_index));
   double dut1;
   hgetr8(hpguppi_databuf_header(user_data->in, user_data->in_index), "DUT1", &dut1);
-  blade_ata_set_block_dut1(dut1);
+  switch (user_data->mode) {
+    case BLADE_MODE_A:
+      blade_ata_a_set_block_time_mjd(jd_mid_block_value);
+      blade_ata_a_set_block_dut1(dut1);
+      break;
+    case BLADE_MODE_B:
+      blade_ata_b_set_block_time_mjd(jd_mid_block_value);
+      blade_ata_b_set_block_dut1(dut1);
+      break;
+    case BLADE_MODE_H:
+      blade_ata_h_set_block_time_mjd(jd_mid_block_value);
+      blade_ata_h_set_block_dut1(dut1);
+      break;
+    default:
+      break;
+  }
 
   // hashpipe_info(user_data->thread_name, "batched input block #%d.", user_data->in_index);
   *buffer_id = user_data->in_index;
@@ -715,7 +873,7 @@ void blade_cb_input_buffer_enqueued(void* user_data_void, size_t buffer_input_id
     // copy across the header
     char* databuf_header = hpguppi_databuf_header(user_data->out, buffer_ouput_id);
 
-    #if BLADE_ATA_MODE == BLADE_ATA_MODE_H
+    if (user_data->mode == BLADE_MODE_H) {
       uint64_t block_stop_pktidx;
       if (user_data->accumulator_counter == 0) {
         memcpy(databuf_header,
@@ -726,57 +884,86 @@ void blade_cb_input_buffer_enqueued(void* user_data_void, size_t buffer_input_id
         hgetu8(hpguppi_databuf_header(user_data->in, buffer_input_id), "BLKSTOP", &block_stop_pktidx);
         hputu8(databuf_header, "BLKSTOP", block_stop_pktidx);
       }
-    #else
+    } 
+    else {
       memcpy(databuf_header,
             hpguppi_databuf_header(user_data->in, buffer_input_id),
             BLOCK_HDR_SIZE);
-    #endif
+    }
 
     //TODO upate output_buffer headers to reflect that they contain beams
-    hputi4(databuf_header, "INCOBEAM", (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
-    hputi4(databuf_header, "NBEAM", BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
-    hputi4(databuf_header, "NBITS", BLADE_ATA_OUTPUT_NBITS);
+    switch (user_data->mode) {
+      case BLADE_MODE_A:
+        hputi4(databuf_header, "INCOBEAM", (BLADE_ATA_MODE_A_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
+        hputi4(databuf_header, "NBEAM", BLADE_ATA_MODE_A_CONFIG.beamformerBeams + (BLADE_ATA_MODE_A_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
+        break;
+      case BLADE_MODE_H:
+        hputi4(databuf_header, "INCOBEAM", (BLADE_ATA_MODE_H_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
+        hputi4(databuf_header, "NBEAM", BLADE_ATA_MODE_H_CONFIG.beamformerBeams + (BLADE_ATA_MODE_H_OUTPUT_INCOHERENT_BEAM ? 1 : 0));
+        break;
+      default:
+        break;
+    }
+    
     hputs(databuf_header, "DATATYPE", "FLOAT");
-    hputs(databuf_header, "SMPLTYPE", BLADE_ATA_OUTPUT_SAMPLE_TYPE);
-    hputi4(databuf_header, "BLOCSIZE", BLADE_BLOCK_DATA_SIZE);
+    hputi4(databuf_header, "BLOCSIZE", blade_get_output_byte_size());
 
     hgetr8(databuf_header, "TBIN", &tbin);
     hgetr8(databuf_header, "OBSBW", &obsbw);
     hgetr8(databuf_header, "CHAN_BW", &chanbw);
 
-    #if BLADE_ATA_MODE == BLADE_ATA_MODE_A
-    // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
-    hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*(BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0)));
-    hputi4(databuf_header, "NPOL", BLADE_ATA_CONFIG.numberOfOutputPolarizations);
+    switch (user_data->mode) {
+      case BLADE_MODE_A:
+        // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
+        hputi4(databuf_header, "OBSNCHAN", user_data->inputDims.NCHANS*BLADE_ATA_MODE_A_CONFIG.channelizerRate*(BLADE_ATA_MODE_A_CONFIG.beamformerBeams + (BLADE_ATA_MODE_A_OUTPUT_INCOHERENT_BEAM ? 1 : 0)));
+        hputi4(databuf_header, "NPOL", BLADE_ATA_MODE_A_CONFIG.numberOfOutputPolarizations);
+        hputs(databuf_header, "SMPLTYPE", "F32");
+        hputi4(databuf_header, "NBITS", BLADE_ATA_MODE_A_OUTPUT_N_BYTES*8);
 
-    tbin *= BLADE_ATA_CONFIG.channelizerRate;
-    tbin *= BLADE_ATA_CONFIG.integrationSize;
+        tbin *= BLADE_ATA_MODE_A_CONFIG.channelizerRate;
+        tbin *= BLADE_ATA_MODE_A_CONFIG.integrationSize;
+        break;
+      case BLADE_MODE_H:
+        if (user_data->accumulator_counter == 0) {
+          // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
+          hputi4(databuf_header, "OBSNCHAN", user_data->inputDims.NCHANS*BLADE_ATA_MODE_H_CONFIG.channelizerRate*BLADE_ATA_MODE_H_CONFIG.accumulateRate*user_data->inputDims.NTIME*(BLADE_ATA_MODE_H_CONFIG.beamformerBeams + (BLADE_ATA_MODE_H_OUTPUT_INCOHERENT_BEAM ? 1 : 0)));
+          hputi4(databuf_header, "NTIME", 1); // accumulation limits output to NTIME dimension-length of 1
+          hputi4(databuf_header, "NPOL", BLADE_ATA_MODE_H_CONFIG.numberOfOutputPolarizations);
+          hputs(databuf_header, "SMPLTYPE", "F32");
+          hputi4(databuf_header, "NBITS", BLADE_ATA_MODE_H_OUTPUT_N_BYTES*8);
 
-    #elif BLADE_ATA_MODE == BLADE_ATA_MODE_H
-    if (user_data->accumulator_counter == 0) {
-      // offload to the downstream filbank writer, which splits OBSNCHAN by number of beams...
-      hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate*BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME*(BLADE_ATA_CONFIG.beamformerBeams + (BLADE_ATA_OUTPUT_INCOHERENT_BEAM ? 1 : 0)));
-      hputi4(databuf_header, "NTIME", 1); // accumulation limits output to NTIME dimension-length of 1
-      hputi4(databuf_header, "NPOL", BLADE_ATA_CONFIG.numberOfOutputPolarizations);
-
-      tbin *= BLADE_ATA_CONFIG.channelizerRate;
-      tbin *= BLADE_ATA_CONFIG.integrationSize;
-      tbin *= BLADE_ATA_CONFIG.accumulateRate*BLADE_ATA_CONFIG.inputDims.NTIME;
+          tbin *= BLADE_ATA_MODE_H_CONFIG.channelizerRate;
+          tbin *= BLADE_ATA_MODE_H_CONFIG.integrationSize;
+          tbin *= BLADE_ATA_MODE_H_CONFIG.accumulateRate*user_data->inputDims.NTIME;
+        }
+        break;
+      case BLADE_MODE_X:
+        hputr8(databuf_header, "XTIMEINT", BLADE_ATA_MODE_X_CONFIG.channelizerRate*((struct blade_ata_mode_x_config*) user_data->mode_config)->integrationSize*tbin);
+        hputr8(databuf_header, "NSAMPLES", 1.0); // should be a ratio of dropped packets to expected packets...
+        hputi4(databuf_header, "NCHAN", user_data->inputDims.NCHANS*BLADE_ATA_MODE_X_CONFIG.channelizerRate/((struct blade_ata_mode_x_config*) user_data->mode_config)->frequencyIntegrationSize);
+        hputi4(databuf_header, "OBSNCHAN", user_data->inputDims.NANTS*user_data->inputDims.NCHANS*BLADE_ATA_MODE_X_CONFIG.channelizerRate/((struct blade_ata_mode_x_config*) user_data->mode_config)->frequencyIntegrationSize);
+        chanbw /= BLADE_ATA_MODE_X_CONFIG.channelizerRate;
+        chanbw *= ((struct blade_ata_mode_x_config*) user_data->mode_config)->frequencyIntegrationSize;
+        tbin *= BLADE_ATA_MODE_X_CONFIG.channelizerRate;
+        tbin *= ((struct blade_ata_mode_x_config*) user_data->mode_config)->integrationSize;
+        
+        hputs(databuf_header, "SMPLTYPE", "CF32");
+        hputi4(databuf_header, "NBITS", BLADE_ATA_MODE_X_OUTPUT_NCOMPLEX_BYTES*8/2);
+        break;
+      case BLADE_MODE_B:
+        hputi4(databuf_header, "NCHAN", user_data->inputDims.NCHANS*BLADE_ATA_MODE_B_CONFIG.channelizerRate); // beams are split into separate files...
+        hputi4(databuf_header, "OBSNCHAN", user_data->inputDims.NCHANS*BLADE_ATA_MODE_B_CONFIG.channelizerRate); // beams are split into separate files...
+        hputs(databuf_header, "SMPLTYPE", (BLADE_ATA_MODE_B_OUTPUT_NCOMPLEX_BYTES == 8 ? "CF32" : "CF16"));
+        hputi4(databuf_header, "NBITS", BLADE_ATA_MODE_B_OUTPUT_NCOMPLEX_BYTES*8/2);
+        break;
+      case BLADE_MODE_K:
+        hputs(databuf_header, "SMPLTYPE", "CF32");
+        hputi4(databuf_header, "NBITS", BLADE_ATA_MODE_K_OUTPUT_NCOMPLEX_BYTES*8/2);
+        break;
+      case BLADE_MODE_UNKNOWN:
+        hashpipe_error(user_data->thread_name, "Unknown BLADE mode!");
+        break;
     }
-
-    #elif BLADE_ATA_MODE == BLADE_ATA_MODE_X
-    hputr8(databuf_header, "XTIMEINT", BLADE_ATA_CONFIG.channelizerRate*((struct blade_ata_mode_x_config*) user_data->mode_config)->integrationSize*tbin);
-    hputr8(databuf_header, "NSAMPLES", 1.0); // should be a ratio of dropped packets to expected packets...
-    hputi4(databuf_header, "NCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate/((struct blade_ata_mode_x_config*) user_data->mode_config)->frequencyIntegrationSize);
-    hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NANTS*BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate/((struct blade_ata_mode_x_config*) user_data->mode_config)->frequencyIntegrationSize);
-    chanbw /= BLADE_ATA_CONFIG.channelizerRate;
-    chanbw *= ((struct blade_ata_mode_x_config*) user_data->mode_config)->frequencyIntegrationSize;
-    tbin *= BLADE_ATA_CONFIG.channelizerRate;
-    tbin *= ((struct blade_ata_mode_x_config*) user_data->mode_config)->integrationSize;
-    #else
-    hputi4(databuf_header, "NCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
-    hputi4(databuf_header, "OBSNCHAN", BLADE_ATA_CONFIG.inputDims.NCHANS*BLADE_ATA_CONFIG.channelizerRate); // beams are split into separate files...
-    #endif
 
     hputr8(databuf_header, "TBIN", tbin);
     hputr8(databuf_header, "OBSBW", obsbw);
@@ -833,12 +1020,8 @@ bool blade_cb_output_buffer_fetch(void* user_data_void, void** buffer, size_t* b
     }
   }
 
-  #if 0 //BLADE_ATA_MODE == BLADE_ATA_MODE_A || BLADE_ATA_MODE == BLADE_ATA_MODE_H
-  *buffer = user_data->out_intermediary[user_data->out_index_free];
-  #else
   hpguppi_blade_output_databuf_t* out = (hpguppi_blade_output_databuf_t*) user_data->out;
   *buffer = hpguppi_databuf_data(out, user_data->out_index_free);
-  #endif
 
   // hashpipe_info(user_data->thread_name, "batched output block #%d.", user_data->out_index_free);
   *buffer_id = user_data->out_index_free;
@@ -887,7 +1070,7 @@ void blade_cb_clear_queued_input(void* user_data_void, size_t input_id) {
   hpguppi_databuf_set_free(user_data->in, input_id);
 }
 
-void blade_cb_clear_queued_output(void* user_data_void, size_t output_id) {
+void blade_cb_reset_output_index(void* user_data_void) {
   blade_userdata_t* user_data = (blade_userdata_t*) user_data_void;
   if(user_data->out_index_free != user_data->out_index_fill) {
     hashpipe_info(user_data->thread_name, "reset output block index from #%d to #%d.", user_data->out_index_free, user_data->out_index_fill);
@@ -931,23 +1114,20 @@ static void *run(hashpipe_thread_args_t *args)
     .in = (hpguppi_input_databuf_t *)args->ibuf,
     .out = (hpguppi_blade_output_databuf_t *)args->obuf,
 
-    // .out_intermediary = {NULL},
-
     .fill_to_free_moving_sum_ns = 0,
     // .fill_to_free_block_ns = {0},
     // .ts_blocks_recvd = {0},
 
+    .inputDims = {
+      .NANTS = N_INPUT_ASPECTS,
+      .NCHANS = N_INPUT_CHANNELS,
+      .NTIME = N_INPUT_BLOCK_TIME,
+      .NPOLS = N_INPUT_POL
+    },
     .mode = BLADE_MODE_UNKNOWN,
     .mode_config = NULL,
   };
-
-  #if 0 // BLADE_ATA_MODE == BLADE_ATA_MODE_A || BLADE_ATA_MODE == BLADE_ATA_MODE_H
-  for(size_t i = 0; i < N_BLADE_OUTPUT_BLOCKS; i++) {
-    blade_userdata.out_intermediary[i] = malloc(BLADE_BLOCK_OUTPUT_DATA_SIZE);
-    blade_userdata.fill_to_free_block_ns[i] = 0;
-    memset(blade_userdata.ts_blocks_recvd + i, 0, sizeof(struct timespec));
-  }
-  #endif
+  blade_set_input_dimensions(&blade_userdata.inputDims);
 
   int cudaDeviceId = args->instance_id;
 
@@ -987,18 +1167,18 @@ static void *run(hashpipe_thread_args_t *args)
   blade_ata_register_output_buffer_fetch_cb(&blade_cb_output_buffer_fetch);
   blade_ata_register_output_buffer_ready_cb(&blade_cb_output_buffer_ready);
   blade_ata_register_blade_queued_input_clear_cb(&blade_cb_clear_queued_input);
-  blade_ata_register_blade_queued_output_clear_cb(&blade_cb_clear_queued_output);
+  blade_ata_register_blade_reset_output_index_cb(&blade_cb_reset_output_index);
 
   while (run_threads())
   {
-    blade_ata_compute_step();
+    blade_compute_step();
 
     // Will exit if thread has been cancelled
     pthread_testcancel();
   }
 
   hashpipe_info(blade_userdata.thread_name, "returning");
-  blade_ata_terminate();
+  blade_terminate();
   return NULL;
 }
 

@@ -6,6 +6,7 @@
 #define _HPGUPPI_DATABUF_H
 
 #include <stdint.h>
+#include "config_input_shape.h"
 #include "hashpipe_databuf.h"
 #include "config.h"
 
@@ -13,9 +14,9 @@
 // but this keeps things 4K (i.e. page) aligned.
 #define ALIGNMENT_SIZE (4096)
 
-#define N_INPUT_BLOCKS 16
+#define N_INPUT_BLOCKS (6)
 #define BLOCK_HDR_SIZE  (5*80*512)      // in bytes, from guppi_daq_server
-#define BLOCK_DATA_SIZE (28*12*1024*1024) // in bytes
+#define BLOCK_DATA_SIZE (N_INPUT_ASPECTS*N_INPUT_CHANNELS*N_INPUT_BLOCK_TIME*N_INPUT_POL*2) // in bytes
 
 typedef struct hpguppi_input_block {
   char hdr[BLOCK_HDR_SIZE];

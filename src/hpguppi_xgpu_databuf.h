@@ -21,7 +21,7 @@
 #include "hpguppi_databuf.h"
 #include "uvh5.h"
 
-#define XGPU_BLOCK_DATA_SIZE 2*BLOCK_DATA_SIZE // in bytes, from guppi_daq_server
+#define XGPU_BLOCK_DATA_SIZE ((size_t)2*BLOCK_DATA_SIZE) // in bytes, from guppi_daq_server
 
 #define XGPU_INTEGRATE_AS_CF64_ON_CPU
 #define BLADE_CORRELATOR

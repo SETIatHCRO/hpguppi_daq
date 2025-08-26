@@ -5,6 +5,8 @@
 #include "blade/runner.hh"
 #include "blade/bundles/ata/mode_b.hh"
 
+#include "hpguppi_blade_runner.hh"
+
 extern "C" {
 #include "hpguppi_blade_ata_mode_b_capi.h"
 }
@@ -15,7 +17,7 @@ using namespace Blade::Bundles::ATA;
 using BladePipeline = ModeB<CI8, BLADE_ATA_MODE_B_OUTPUT_ELEMENT_T>;
 
 template<typename IT, typename OT>
-class ModeBRunner : public Runner {
+class ModeBRunner : public ModeRunner {
  public:
     struct Config {
         ArrayShape inputShape;
@@ -38,14 +40,14 @@ class ModeBRunner : public Runner {
           blockDut1({1})
     {
         
-        std::vector<XYZ> antennaPositions(ata_b_config->inputDims.NANTS);
+        std::vector<XYZ> antennaPositions(config.inputShape.numberOfAspects());
         std::vector<RA_DEC> beamCoordinates(ata_b_config->beamformerBeams);
         std::vector<std::complex<double>> antennaCalibrationsCpp(
-                ata_b_config->inputDims.NANTS*\
-                ata_b_config->inputDims.NCHANS*\
-                ata_b_config->inputDims.NPOLS);
+                config.inputShape.numberOfAspects()*\
+                config.inputShape.numberOfFrequencyChannels()*\
+                config.inputShape.numberOfPolarizations());
         int i;
-        for(i = 0; i < ata_b_config->inputDims.NANTS; i++){
+        for(i = 0; i < config.inputShape.numberOfAspects(); i++){
             antennaPositions[i].X = antennaPositions_xyz[i*3 + 0];
             antennaPositions[i].Y = antennaPositions_xyz[i*3 + 1];
             antennaPositions[i].Z = antennaPositions_xyz[i*3 + 2];
@@ -58,10 +60,10 @@ class ModeBRunner : public Runner {
                 antennaCalibrationsCpp.size()*sizeof(antennaCalibrationsCpp[0]));
 
         auto phasorAntennaCalibrations = ArrayTensor<Device::CPU, CF64>({
-            ata_b_config->inputDims.NANTS,
-            ata_b_config->inputDims.NCHANS * ata_b_config->channelizerRate,
+            config.inputShape.numberOfAspects(),
+            config.inputShape.numberOfFrequencyChannels() * ata_b_config->channelizerRate,
             1,
-            ata_b_config->inputDims.NPOLS,
+            config.inputShape.numberOfPolarizations(),
         });
 
         const size_t calAntStride = 1;
@@ -142,18 +144,23 @@ class ModeBRunner : public Runner {
     }
 
 
-    Result transferIn(const ArrayTensor<Device::CPU, IT>& cpuInputBuffer) {
+    Result transferIn(const ArrayTensor<Device::CPU, IT>& cpuInputBuffer) override {
         BL_CHECK(this->copy(inputBuffer, cpuInputBuffer));
         return Result::SUCCESS;
     }
 
-    Result transferResult() {
+    Result transferResult() override {
         BL_CHECK(this->copy(outputBuffer, pipeline->getOutputBuffer()));
         return Result::SUCCESS;
     }
-    Result transferOut(ArrayTensor<Device::CPU, OT>& cpuOutputBuffer) {
-        BL_CHECK(this->copy(cpuOutputBuffer, outputBuffer));
+    Result transferOut(void* cpuOutputBuffer) override {
+        auto output = ArrayTensor<Device::CPU, OT>(cpuOutputBuffer, State.outputShape);
+        BL_CHECK(this->copy(output, outputBuffer));
         return Result::SUCCESS;
+    }
+
+    size_t outputByteSize() override {
+        return this->outputBuffer.at(0).shape().size()*sizeof(OT);
     }
 
     void setJulianDate(F64 value) {
@@ -174,32 +181,6 @@ class ModeBRunner : public Runner {
     Tensor<Device::CPU, F64> blockDut1;
 };
 
-static struct {
-    U64 StepCount = 0;
-    void* UserData = nullptr;
-    std::unordered_map<U64, void*> InputPointerMap;
-    std::unordered_map<U64, void*> OutputPointerMap;
-
-    std::shared_ptr<ModeBRunner<CI8, BLADE_ATA_MODE_B_OUTPUT_ELEMENT_T>> pipelineRunner;
-    
-    size_t bufferId_output = 0;
-
-    ArrayShape inputShape;
-    ArrayShape outputShape;
-
-    struct {
-        blade_stateful_cb* InputBufferPrefetch;
-        blade_input_buffer_fetch_cb* InputBufferFetch;
-        blade_input_buffer_enqueued_cb* InputBufferEnqueued;
-        blade_input_buffer_ready_cb* InputBufferReady;
-        blade_output_buffer_fetch_cb* OutputBufferFetch;
-        blade_output_buffer_ready_cb* OutputBufferReady;
-
-        blade_clear_queued_cb* InputClear;
-        blade_clear_queued_cb* OutputClear;
-    } Callbacks;
-} State;
-
 bool blade_ata_b_initialize(
     struct blade_ata_mode_b_config ata_b_config,
     size_t numberOfWorkers,
@@ -219,16 +200,16 @@ bool blade_ata_b_initialize(
     BL_INFO("Initializing...");
 
     State.inputShape = ArrayShape({
-        ata_b_config.inputDims.NANTS,
-        ata_b_config.inputDims.NCHANS,
-        ata_b_config.inputDims.NTIME,
-        ata_b_config.inputDims.NPOLS,
+        N_INPUT_ASPECTS,
+        N_INPUT_CHANNELS,
+        N_INPUT_BLOCK_TIME,
+        N_INPUT_POL,
     });
 
     State.outputShape = ArrayShape({
         ata_b_config.beamformerBeams,
-        ata_b_config.inputDims.NCHANS * ata_b_config.channelizerRate,
-        ata_b_config.inputDims.NTIME / ata_b_config.channelizerRate,
+        N_INPUT_CHANNELS * ata_b_config.channelizerRate,
+        N_INPUT_BLOCK_TIME / ata_b_config.channelizerRate,
         2 // detector disabled
     });
 
@@ -253,167 +234,12 @@ bool blade_ata_b_initialize(
     return true;
 }
 
-void blade_ata_b_terminate() {
-    if (!State.pipelineRunner) {
-        BL_WARN("No pipeline to terminate.")
-        return;
-    }
-    State.pipelineRunner.reset();
-
-    for (const auto& [inputId, recycleBuffer_input] : State.InputPointerMap) {
-        State.Callbacks.InputClear(State.UserData, inputId);
-    }
-    State.InputPointerMap.clear();
-    for (const auto& [outputId, recycleBuffer_output] : State.OutputPointerMap) {
-        State.Callbacks.OutputClear(State.UserData, outputId);
-    }
-    State.OutputPointerMap.clear();
-}
-
-size_t blade_ata_b_get_input_size() {
-    assert(State.pipelineRunner);
-    return State.inputShape.size();
-}
-
-size_t blade_ata_b_get_output_size() {
-    assert(State.pipelineRunner);
-    return State.outputShape.size();
-}
-
 void blade_ata_b_set_block_time_mjd(double mjd) {
-    State.pipelineRunner->setJulianDate(mjd);
+    using ModeBRunner = ModeBRunner<CI8, BLADE_ATA_MODE_B_OUTPUT_ELEMENT_T>;
+    std::static_pointer_cast<ModeBRunner>(State.pipelineRunner)->setJulianDate(mjd);
 }
 
 void blade_ata_b_set_block_dut1(double dut1) {
-    State.pipelineRunner->setDut1(dut1);
-}
-
-void blade_ata_b_register_user_data(void* user_data) {
-    State.UserData = user_data;
-}
-
-void blade_ata_b_register_input_buffer_prefetch_cb(blade_stateful_cb* f) {
-    State.Callbacks.InputBufferPrefetch = f;
-}
-
-void blade_ata_b_register_input_buffer_fetch_cb(blade_input_buffer_fetch_cb* f) {
-    State.Callbacks.InputBufferFetch = f;
-}
-
-void blade_ata_b_register_input_buffer_enqueued_cb(blade_input_buffer_enqueued_cb* f) {
-    State.Callbacks.InputBufferEnqueued = f;
-}
-
-void blade_ata_b_register_input_buffer_ready_cb(blade_input_buffer_ready_cb* f) {
-    State.Callbacks.InputBufferReady = f;
-}
-
-void blade_ata_b_register_output_buffer_fetch_cb(blade_output_buffer_fetch_cb* f) {
-    State.Callbacks.OutputBufferFetch = f;
-}
-
-void blade_ata_b_register_output_buffer_ready_cb(blade_output_buffer_ready_cb* f) {
-    State.Callbacks.OutputBufferReady = f;
-}
-
-void blade_ata_b_register_blade_queued_input_clear_cb(blade_clear_queued_cb* f) {
-    State.Callbacks.InputClear = f;
-}
-
-void blade_ata_b_register_blade_queued_output_clear_cb(blade_clear_queued_cb* f) {
-    State.Callbacks.OutputClear = f;
-}
-
-bool blade_ata_b_compute_step() {
-    bool prefetch = State.Callbacks.InputBufferPrefetch(State.UserData);
-    
-    if(!State.pipelineRunner) {
-        return false;
-    }
-
-    if (prefetch) {
-        size_t bufferId_input;
-        void* externalBuffer_input = nullptr;
-        // Calls client callback to request empty input buffer.
-        if (!State.Callbacks.InputBufferFetch(State.UserData, &externalBuffer_input, &bufferId_input)) {
-            return false;
-        }
-
-        if (State.pipelineRunner->computeCurrentStepCount() == 0) {
-            void* externalBuffer_output = nullptr;
-            if (!State.Callbacks.OutputBufferFetch(State.UserData, &externalBuffer_output, &State.bufferId_output)) {
-                BL_WARN("No output buffer available. Skipping input buffer {}.", bufferId_input);
-                State.Callbacks.InputClear(State.UserData, bufferId_input);
-                return false;
-            }
-            State.OutputPointerMap.insert({State.bufferId_output, externalBuffer_output});
-        }
-
-        // Create Memory::ArrayTensor from RAW pointer.
-        auto input = ArrayTensor<Device::CPU, CI8>(externalBuffer_input, State.inputShape);
-        State.InputPointerMap.insert({bufferId_input, externalBuffer_input});
-        auto output = ArrayTensor<Device::CPU, BLADE_ATA_MODE_B_OUTPUT_ELEMENT_T>(State.OutputPointerMap[State.bufferId_output], State.outputShape);
-
-        // Transfer input memory to the pipeline.
-        auto inputCallback = [&](){
-            return State.pipelineRunner->transferIn(input);
-        };
-        auto transferCallback = [&](){
-            void* recycleBuffer_input = State.InputPointerMap[bufferId_input];
-            State.Callbacks.InputBufferReady(State.UserData, recycleBuffer_input, bufferId_input);
-            State.InputPointerMap.erase(bufferId_input);
-            return Result::SUCCESS;
-        };
-        auto resultCallback = [&](){
-            return State.pipelineRunner->transferResult();
-        };
-        auto outputCallback = [&](){
-            return State.pipelineRunner->transferOut(output);
-        };
-
-        if ( Result::SUCCESS !=
-            State.pipelineRunner->enqueue(inputCallback, transferCallback, resultCallback, outputCallback, bufferId_input, State.bufferId_output)
-        ) {
-            // Dequeue last runner job and recycle output buffer.
-            State.pipelineRunner->dequeue(
-                [&](
-                    const U64& inputId, 
-                    const U64& outputId,
-                    const bool& didOutput
-                ){
-                    if (didOutput) { // should assert this really
-                    
-                        void* recycleBuffer_output = State.OutputPointerMap[outputId];
-                        State.Callbacks.OutputBufferReady(State.UserData, recycleBuffer_output, outputId);
-                        State.OutputPointerMap.erase(outputId);
-                    }
-                    return Result::SUCCESS;
-                }
-            );
-            State.pipelineRunner->enqueue(inputCallback, transferCallback, resultCallback, outputCallback, bufferId_input, State.bufferId_output);// should assert or something
-        }
-        // Asynchronous CPU work
-        State.Callbacks.InputBufferEnqueued(State.UserData, bufferId_input, State.bufferId_output);
-    }
-    // else {
-    //     // Dequeue last runner job and recycle output buffer.
-    //     State.pipelineRunner->dequeue(
-    //         [&](
-    //             const U64& inputId, 
-    //             const U64& outputId,
-    //             const bool& didOutput
-    //         ){
-    //             if (didOutput) {
-    //                 void* recycleBuffer_output = State.OutputPointerMap[outputId];
-    //                 State.Callbacks.OutputBufferReady(State.UserData, recycleBuffer_output, outputId);
-    //                 State.OutputPointerMap.erase(outputId);
-    //                 return Result::SUCCESS;
-    //             }
-    //             return Result::ERROR;
-    //         }
-    //     );
-    // }
-
-    // Return buffer was queued.
-    return true;
+    using ModeBRunner = ModeBRunner<CI8, BLADE_ATA_MODE_B_OUTPUT_ELEMENT_T>;
+    std::static_pointer_cast<ModeBRunner>(State.pipelineRunner)->setDut1(dut1);
 }
