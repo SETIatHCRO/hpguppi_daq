@@ -239,11 +239,6 @@ static int init(hashpipe_thread_args_t *args)
 
     // Store bind port in status buffer (in case it was not there before).
     hputu4(st->buf, "BINDPORT", bindport);
-    
-    if(bindport > 0) {
-      hashpipe_info(thread_name, "Setting IBVSNIFF to BINDPORT (%d) to trigger sniffer ibv_flow creation.", bindport);
-      hputi4(st->buf, "IBVSNIFF", bindport);
-    }
   }
   hashpipe_status_unlock_safe(st);
 

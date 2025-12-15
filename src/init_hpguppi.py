@@ -11,25 +11,31 @@ default_prefix_exec =	"/opt/mnt/bin/"
 default_prefix_lib 	=	"/opt/mnt/lib/"
 default_logdir			= None # Switches off logging
 ############ Hands off from here on
-def index_yaml_value(yaml_value, instance, cpu_count, subsystem):
+def index_yaml_value(yaml_value, hostname, instance, cpu_count, subsystem):
 	if isinstance(yaml_value, list):
 		return yaml_value[instance]
 	if isinstance(yaml_value, dict):
 		if cpu_count in yaml_value:
 			return yaml_value[cpu_count]
-		return yaml_value[subsystem]
+		if hostname in yaml_value:
+			return index_yaml_value(yaml_value[hostname], hostname, instance, cpu_count, subsystem)
+		try:
+			return yaml_value[subsystem]
+		except KeyError:
+			pass
+		raise KeyError(f"Neither the cpu_count ({cpu_count}) nor the hostname ({hostname}) nor the subsystem ({subsystem}) were keys in the map: {yaml_value.keys()}")
 	return yaml_value
 
 
-def collect_yaml_value(yaml_value, instance, cpu_count, subsystem):
+def collect_yaml_value(yaml_value, hostname, instance, cpu_count, subsystem):
 	collection = []
 	for value in yaml_value:
-		contextual_value = index_yaml_value(value, instance, cpu_count, subsystem)
+		contextual_value = index_yaml_value(value, hostname, instance, cpu_count, subsystem)
 		if isinstance(contextual_value, list):
 			# handle nested containers
 			collection += list(
 				map(
-					lambda v: index_yaml_value(v, instance, cpu_count, subsystem) if isinstance(v, list) or isinstance(v, dict) else v,
+					lambda v: index_yaml_value(v, hostname, instance, cpu_count, subsystem) if isinstance(v, (list, dict)) else v,
 					contextual_value
 				)
 			)
@@ -85,6 +91,7 @@ def delete(
 		assert system_name in yaml_config , 'System {} not defined in {}'.format(system_name, config_filename)
 
 	system = yaml_config[system_name]
+	hostname = socket.gethostname()
 	
 	prefix_exec = system.get('prefix_exec', default_prefix_exec)
 
@@ -99,7 +106,7 @@ def delete(
 	if 'hashpipe_keyfile' in system:
 		environment_keys.append('HASHPIPE_KEYFILE={}'.format(system['hashpipe_keyfile']))
 	if 'environment' in system:
-		environment_keys += collect_yaml_value(system['environment'], instance, cores_per_cpu, subsystem)
+		environment_keys += collect_yaml_value(system['environment'], hostname, instance, cores_per_cpu, subsystem)
 	
 	cmd = [
 		f"{prefix_exec}hashpipe_clean_shmem",
@@ -136,6 +143,8 @@ def run(
 		assert system_name in yaml_config , 'System {} not defined in {}'.format(system_name, config_filename)
 
 	system = yaml_config[system_name]
+
+	hostname = socket.gethostname()
 
 	# Gather cpu core count
 	try:
@@ -279,7 +288,7 @@ def run(
 	hpguppi_plugin = system.get('hpguppi_plugin', 'hpguppi_daq.so')
 
 	# Gather required instance-sensitive instantiation variables
-	assert 'instance_datadir' in system, '{} for system {} ({} core) in {}'.format('instance_datadir', system_name, cpu_core_count, config_filename)
+	assert 'instance_datadir' in system, '{} for system {} ({} core) in {}'.format('instance_datadir', system_name, cores_per_cpu, config_filename)
 	instance_datadir = system['instance_datadir']
 	if isinstance(instance_datadir, dict):
 		instance_datadir = instance_datadir[cores_per_cpu]
@@ -288,7 +297,7 @@ def run(
 	assert os.path.exists(instance_datadir), '{} datadir path does not exist for instance {} of system {} ({} core) in {}'.format(
 		instance_datadir, instance, system_name, cores_per_cpu, config_filename)
 
-	assert 'instance_bindhost' in system, '{} for system {} ({} core) in {}'.format('instance_bindhost', system_name, cpu_core_count, config_filename)
+	assert 'instance_bindhost' in system, '{} for system {} ({} core) in {}'.format('instance_bindhost', system_name, cores_per_cpu, config_filename)
 	instance_bindhost = system['instance_bindhost']
 	if isinstance(instance_bindhost, dict):
 		instance_bindhost = instance_bindhost[cores_per_cpu]
@@ -316,7 +325,7 @@ def run(
 	}
 
 	if 'options' in system:
-		options += collect_yaml_value(system['options'], instance, cores_per_cpu, subsystem)
+		options += collect_yaml_value(system['options'], hostname, instance, cores_per_cpu, subsystem)
 
 		# replace keywords
 		for (option_idx, option) in enumerate(options):
@@ -357,7 +366,7 @@ def run(
 	# Handle logging true switch
 	out_logpath = None
 	err_logpath = None
-	if logdir is not None:
+	if logdir is not None and not dry_run:
 		# Generate log filepaths
 		hostname = socket.gethostname()
 		out_logpath = os.path.join(logdir, '{}.{}.out'.format(hostname, instance))
@@ -385,20 +394,21 @@ def run(
 	if 'hashpipe_keyfile' in system:
 		environment_keys.append('HASHPIPE_KEYFILE={}'.format(system['hashpipe_keyfile']))
 	if 'environment' in system:
-		environment_keys += collect_yaml_value(system['environment'], instance, cores_per_cpu, subsystem)
+		environment_keys += collect_yaml_value(system['environment'], hostname, instance, cores_per_cpu, subsystem)
 
 	hashpipe_env = get_extended_environment(environment_keys, _keyword_variable_dict)
 
 	if 'setup_commands' in system:
-		for setup_command in collect_yaml_value(system['setup_commands'], instance, cores_per_cpu, subsystem):
+		for setup_command in collect_yaml_value(system['setup_commands'], hostname, instance, cores_per_cpu, subsystem):
 			for var,val in _keyword_variable_dict.items():
 				setup_command = setup_command.replace('${}'.format(var), str(val))
 			print('#', setup_command)
-			out_logio.write('\n# {}\n'.format(setup_command))
-			if not dry_run:
+			if out_logio is not None:
+				out_logio.write('\n# {}\n'.format(setup_command))
 				out_logio.write(subprocess.run(setup_command.split(' '), env=hashpipe_env, capture_output=True).stdout.decode())
 		print()
-		out_logio.write('%'*20+'\n')
+		if out_logio is not None:
+			out_logio.write('%'*20+'\n')
 
 	print(' '.join(environment_keys[system_environment_keys_start_index:] + cmd))
 
@@ -407,10 +417,11 @@ def run(
 	else:
 		print(hashpipe_env)
 		print('^^^ Dry run ^^^')
-		err_logio.write('Dry run')
-		out_logio.write('Dry run')
-		err_logio.close()
-		out_logio.close()
+		if err_logio is not None:
+			err_logio.write('Dry run')
+			out_logio.write('Dry run')
+			err_logio.close()
+			out_logio.close()
 
 	if 'post_commands' in system:
 		post_commands = system['post_commands']

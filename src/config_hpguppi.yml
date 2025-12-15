@@ -36,6 +36,20 @@ ata:
     - LD_LIBRARY_PATH=/opt/mnt/src/filterbankc99/install/lib/x86_64-linux-gnu:/home/sonata/src/hashpipe/src/.libs:/opt/mnt/src/uvh5c99/install/lib/x86_64-linux-gnu:/opt/mnt/src/blade/install/lib:/opt/mnt/src/blade/install/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu/:/opt/mnt/lib:/usr/local/cuda-11.8.0/lib64/
   options:
     - IBVPKTSZ=42,16,8208
+    - seti-node1: [DESTIP=239.1.1.1, DESTIP=239.1.1.2]
+      seti-node2: [DESTIP=239.1.1.3, DESTIP=239.1.1.4]
+      seti-node3: [DESTIP=239.1.1.5, DESTIP=239.1.1.6]
+      seti-node4: [DESTIP=239.1.1.7, DESTIP=239.1.2.1]
+      seti-node5: [DESTIP=239.1.2.2, DESTIP=239.1.2.3]
+      seti-node6: [DESTIP=239.1.2.4, DESTIP=239.1.2.5]
+      seti-node7: [DESTIP=239.1.2.6, DESTIP=239.1.2.7]
+      seti-node8: [DESTIP=239.1.3.1, DESTIP=239.1.3.2]
+      seti-node9: [DESTIP=239.1.3.3, DESTIP=239.1.3.4]
+      seti-node10: [DESTIP=239.1.3.5, DESTIP=239.1.3.6]
+      seti-node11: [DESTIP=239.1.3.7, DESTIP=239.1.4.1]
+      seti-node12: [DESTIP=239.1.4.2, DESTIP=239.1.4.3]
+      seti-node13: [DESTIP=239.1.4.4, DESTIP=239.1.4.5]
+      seti-node14: [DESTIP=239.1.4.6, DESTIP=239.1.4.7]
     - ibv:
         - HPCONFIG=IBV-FTP-DISK
         - PROJID=dmpauto
@@ -90,7 +104,6 @@ ata:
     - DIRECTIO=1
     # - IBVPKTSZ=42,16,4112
     - CUDADEV=$INSTANCE
-    - BINDPORT=50000
     - TELESCOP=ATA
   instance_numanode_bind: [0, 1]
   instance_datadir: [/mnt/buf0, /mnt/buf1]
@@ -190,6 +203,20 @@ dev:
     - LD_LIBRARY_PATH=/home/sonata/dev/filterbankc99/install/lib/x86_64-linux-gnu:/home/sonata/dev/hashpipe/src/.libs:/home/sonata/dev/uvh5c99/install:/home/sonata/dev/uvh5c99/install/lib:/home/sonata/dev/uvh5c99/install/lib/x86_64-linux-gnu:/home/sonata/dev/blade/install:/home/sonata/dev/blade/install/lib:/home/sonata/dev/blade/install/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu/:/opt/mnt/lib:/usr/local/cuda-11.8.0/lib64/
   options:
     - IBVPKTSZ=42,16,8208
+    - seti-node1: [DESTIP=239.1.1.1, DESTIP=239.1.1.2]
+      seti-node2: [DESTIP=239.1.1.3, DESTIP=239.1.1.4]
+      seti-node3: [DESTIP=239.1.1.5, DESTIP=239.1.1.6]
+      seti-node4: [DESTIP=239.1.1.7, DESTIP=239.1.2.1]
+      seti-node5: [DESTIP=239.1.2.2, DESTIP=239.1.2.3]
+      seti-node6: [DESTIP=239.1.2.4, DESTIP=239.1.2.5]
+      seti-node7: [DESTIP=239.1.2.6, DESTIP=239.1.2.7]
+      seti-node8: [DESTIP=239.1.3.1, DESTIP=239.1.3.2]
+      seti-node9: [DESTIP=239.1.3.3, DESTIP=239.1.3.4]
+      seti-node10: [DESTIP=239.1.3.5, DESTIP=239.1.3.6]
+      seti-node11: [DESTIP=239.1.3.7, DESTIP=239.1.4.1]
+      seti-node12: [DESTIP=239.1.4.2, DESTIP=239.1.4.3]
+      seti-node13: [DESTIP=239.1.4.4, DESTIP=239.1.4.5]
+      seti-node14: [DESTIP=239.1.4.6, DESTIP=239.1.4.7]
     - xgpu:
         - HPCONFIG=DEV_IBV-TFPDP4A-XGPU-UVH5
         - BACKEND=UVH5
@@ -270,7 +297,6 @@ dev:
     - POLS=xy
     - DIRECTIO=1
     - CUDADEV=$INSTANCE
-    - BINDPORT=50000
     - TELESCOP=ATA
   instance_numanode_bind: [0, 1]
   instance_datadir: [/mnt/buf0, /mnt/buf1]
