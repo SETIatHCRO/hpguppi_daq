@@ -128,7 +128,7 @@ void hpguppi_fil_read_header_from_status(
   filheader->tstart = mjd;    // MJD
 
   filheader->ibeam = -1; // Beam number
-  filheader->data_type = 0;
+  filheader->data_type = 1; // filterbank https://github.com/FRBs/sigpyproc3/blob/main/sigpyproc/params.py#L176-L188
   filheader->pulsarcentric = 0;
   filheader->barycentric = 0;
 

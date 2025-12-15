@@ -1,0 +1,9 @@
+#ifndef _CONFIG_INPUT_SHAPE_H
+#define _CONFIG_INPUT_SHAPE_H
+
+#define N_INPUT_ASPECTS 28
+#define N_INPUT_CHANNELS 192
+#define N_INPUT_BLOCK_TIME 8192
+#define N_INPUT_POL 2
+
+#endif

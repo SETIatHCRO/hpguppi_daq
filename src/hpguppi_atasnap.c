@@ -83,6 +83,38 @@ void increment_block(struct datablock_stats *d, int64_t block_num)
   reset_datablock_stats(d);
 }
 
+// Wait for a datablock_stats's databuf block to be free
+int check_block_free_within(
+    const struct datablock_stats * d,
+    size_t* timeout_ns
+) {
+  int rv;
+  size_t timeout_counts = 0, ns_elapsed = 0;
+  struct timespec timestamp_start = {0}, timestamp_stop = {0};
+  clock_gettime(CLOCK_MONOTONIC, &timestamp_start);
+
+  while (1) {
+    rv = hpguppi_databuf_check_free(d->dbout, d->block_idx);
+    clock_gettime(CLOCK_MONOTONIC, &timestamp_stop);
+    // size_t ns_elapsed = (((int64_t)timestamp_stop.tv_sec-timestamp_start.tv_sec)*1000000000+(timestamp_stop.tv_nsec-timestamp_start.tv_nsec));
+    ns_elapsed = (((int64_t)timestamp_stop.tv_sec-timestamp_start.tv_sec)*1000000000+(timestamp_stop.tv_nsec-timestamp_start.tv_nsec));
+
+    if (rv==HASHPIPE_TIMEOUT) {
+      timeout_counts += 1;
+      if (*timeout_ns < ns_elapsed) {
+        *timeout_ns = 0;
+        break;
+      }
+    }
+    else {
+      *timeout_ns -= ns_elapsed;
+      break;
+    }
+  }
+
+  return rv;
+}
+
 // Wait for a datablock_stats's databuf block to be free, then copy status buffer to
 // block's header and clear block's data.  Calling thread will exit on error
 // (should "never" happen).  Status buffer updates made after the copy to the
@@ -95,6 +127,7 @@ void wait_for_block_free(const struct datablock_stats * d,
     hashpipe_status_t * st, const char * status_key)
 {
   int rv;
+  size_t timeout_counts = 0;
   char netstat[80] = {0};
   char netbuf_status[80];
   int netbuf_full = hpguppi_databuf_total_status(d->dbout);
@@ -108,21 +141,40 @@ void wait_for_block_free(const struct datablock_stats * d,
   }
   hashpipe_status_unlock_safe(st);
 
-  while ((rv=hpguppi_databuf_wait_free(d->dbout, d->block_idx))
+  struct timespec timeout, timestamp_start, timestamp_stop;
+  timeout.tv_sec = 0;
+  timeout.tv_nsec = 50000; // 50 us
+      
+  clock_gettime(CLOCK_MONOTONIC, &timestamp_start);
+  // while ((rv=hpguppi_databuf_wait_free_timeout(d->dbout, d->block_idx, &timeout))
+  while ((rv=hpguppi_databuf_check_free(d->dbout, d->block_idx))
       != HASHPIPE_OK) {
     if (rv==HASHPIPE_TIMEOUT) {
-    //   netbuf_full = hpguppi_databuf_total_status(d->dbout);
-    //   sprintf(netbuf_status, "%d/%d", netbuf_full, d->dbout->header.n_block););
-      hashpipe_status_lock_safe(st);
-      hputs(st->buf, status_key, "outblocked");
-      hputs(st->buf, "NETBUFST", netbuf_status);
-      hashpipe_status_unlock_safe(st);
+      if (timeout_counts == 0) {
+        hashpipe_status_lock_safe(st);
+          hputs(st->buf, status_key, "outblocked");
+          hputs(st->buf, "NETBUFST", netbuf_status);
+        hashpipe_status_unlock_safe(st);
+        // hashpipe_warn(status_key,
+        //     "blocked waiting for free databuf: %d (%s full)", d->block_idx, netbuf_status);
+      }
+      timeout_counts += 1;
     } else {
-      hashpipe_error("hpguppi_atasnap_pktsock_thread",
+      hashpipe_error(status_key,
           "error waiting for free databuf");
       pthread_exit(NULL);
     }
   }
+  clock_gettime(CLOCK_MONOTONIC, &timestamp_stop);
+  int64_t ns_elapsed = (((int64_t)timestamp_stop.tv_sec-timestamp_start.tv_sec)*1000000000+(timestamp_stop.tv_nsec-timestamp_start.tv_nsec));
+  if (timeout_counts != 0) {
+    hashpipe_warn(status_key,
+        "blocked waiting (%d timeouts) for free databuf #%d (%s full) for %lu ns.", timeout_counts, d->block_idx, netbuf_status, ns_elapsed);
+  }
+  // else {
+  //   hashpipe_warn(status_key,
+  //       "no waiting for free databuf #%d (%s full) (%lu ns).", d->block_idx, netbuf_status, ns_elapsed);
+  // }
 
   hashpipe_status_lock_safe(st);
   {
@@ -181,6 +233,41 @@ unsigned check_pkt_observability(
   return obs_code;
 }
 
+void set_stt_status_keys(
+  char *status_buf,
+  uint64_t pktidx,
+  struct mjd_t *mjd
+){
+  // uint32_t pktntime = ATASNAP_DEFAULT_PKTNTIME;
+  uint64_t synctime = 0;
+  double chan_bw = 1.0;
+
+  double realtime_secs = 0.0;
+  struct timespec ts;
+
+  // hgetu4(status_buf, "PKTNTIME", &pktntime);
+  hgetr8(status_buf, "CHAN_BW", &chan_bw);
+  hgetu8(status_buf, "SYNCTIME", &synctime);
+
+  // Calc real-time seconds since SYNCTIME for pktidx, taken to be a multiple of PKTNTIME:
+  //
+  //                          pktidx
+  //     realtime_secs = -------------------
+  //                        1e6 * chan_bw
+  if(chan_bw != 0.0) {
+    realtime_secs = pktidx / (1e6 * fabs(chan_bw));
+  }
+
+  ts.tv_sec = (time_t)(synctime + rint(realtime_secs));
+  ts.tv_nsec = (long)((realtime_secs - rint(realtime_secs)) * 1e9);
+
+  get_mjd_from_timespec(&ts, &(mjd->stt_imjd), &(mjd->stt_smjd), &(mjd->stt_offs));
+
+  hputu4(status_buf, "STT_IMJD", mjd->stt_imjd);
+  hputu4(status_buf, "STT_SMJD", mjd->stt_smjd);
+  hputr8(status_buf, "STT_OFFS", mjd->stt_offs);
+}
+
 //  if state == RECORD && STTVALID == 0 
 //    STTVALID=1
 //    calculate and store STT_IMJD, STT_SMJD
@@ -191,12 +278,6 @@ uint32_t update_stt_status_keys( hashpipe_status_t *st,
                                     enum run_states state,
                                     uint64_t pktidx,
                                     struct mjd_t *mjd){
-  // uint32_t pktntime = ATASNAP_DEFAULT_PKTNTIME;
-  uint64_t synctime = 0;
-  double chan_bw = 1.0;
-
-  double realtime_secs = 0.0;
-  struct timespec ts;
 
   uint32_t sttvalid = 0;
   hashpipe_status_lock_safe(st);
@@ -204,28 +285,11 @@ uint32_t update_stt_status_keys( hashpipe_status_t *st,
     hgetu4(st->buf, "STTVALID", &sttvalid);
     if((state == ARMED || state == RECORD) && sttvalid != 1) {
       sttvalid = 1;
-
-      // hgetu4(st->buf, "PKTNTIME", &pktntime);
-      hgetr8(st->buf, "CHAN_BW", &chan_bw);
-      hgetu8(st->buf, "SYNCTIME", &synctime);
-
-      // Calc real-time seconds since SYNCTIME for pktidx, taken to be a multiple of PKTNTIME:
-      //
-      //                          pktidx
-      //     realtime_secs = -------------------
-      //                        1e6 * chan_bw
-      if(chan_bw != 0.0) {
-        realtime_secs = pktidx / (1e6 * fabs(chan_bw));
-      }
-
-      ts.tv_sec = (time_t)(synctime + rint(realtime_secs));
-      ts.tv_nsec = (long)((realtime_secs - rint(realtime_secs)) * 1e9);
-
-      get_mjd_from_timespec(&ts, &(mjd->stt_imjd), &(mjd->stt_smjd), &(mjd->stt_offs));
-
-      hputu4(st->buf, "STT_IMJD", mjd->stt_imjd);
-      hputu4(st->buf, "STT_SMJD", mjd->stt_smjd);
-      hputr8(st->buf, "STT_OFFS", mjd->stt_offs);
+      set_stt_status_keys(
+        st->buf,
+        pktidx,
+        mjd
+      );
     }
     else if(state == IDLE && sttvalid != 0) {
       sttvalid = 0;

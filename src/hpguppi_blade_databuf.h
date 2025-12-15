@@ -16,11 +16,21 @@
 
 #include <hashpipe.h>
 
+#include "config_input_shape.h"
 #include "hpguppi_databuf.h"
 
-#include "hpguppi_ata_blade_mode.h"
+#if N_INPUT_CHANNELS == 1
+// spectral-line mode
+// Take largest output to be an expansion from CI8 -> CF32 (a factor of 4)
+// and A*=ceil(N_INPUT_ASPECTS/2), P*=2 for correlation...
+#define BLADE_BLOCK_DATA_SIZE (BLOCK_DATA_SIZE*(N_INPUT_ASPECTS+1)*4)
+#else
+// continuum-line mode
+// Take largest output to be an expansion from CI8 -> CF32 (a factor of 4)
+#define BLADE_BLOCK_DATA_SIZE (BLOCK_DATA_SIZE*4)
+#endif
 
-#define N_BLADE_OUTPUT_BLOCKS 8
+#define N_BLADE_OUTPUT_BLOCKS 6
 
 typedef struct {
   char hdr[BLOCK_HDR_SIZE];

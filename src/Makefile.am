@@ -13,7 +13,7 @@ AM_CFLAGS += -Wno-format-truncation
 AM_CFLAGS += -Wno-unused-but-set-variable
 
 # Convenience variables to group source files
-hpguppi_databuf = hpguppi_databuf.h \
+hpguppi_databuf = config_input_shape.h hpguppi_databuf.h \
 		  hpguppi_databuf.c
 
 hpguppi_support = hpguppi_atasnap.h \
@@ -36,7 +36,10 @@ libsla_support = slalib.h sla.c f77.h
 
 hpguppi_threads = \
 		hpguppi_ata_ibv_payload_order_thread.c \
-		hpguppi_atasnap_obs_rawdisk_thread.c
+		hpguppi_atasnap_obs_rawdisk_thread.c \
+		hpguppi_binary_dump_thread.c \
+		hpguppi_binary_ingest_thread.c \
+		hpguppi_no_dump_thread.c
 #		guppiraw_ibv_packetize_thread.c # depends on rawspec currently
 
 if IBVERBS_ENABLED
@@ -65,10 +68,11 @@ hpguppi_support += \
 		ata_antenna_weights_binary/include/antenna_weights.h
 
 hpguppi_blade_c_api_files = \
+		config_input_shape.h \
+		hpguppi_blade_runner.hh \
 		hpguppi_blade_capi.h \
 		hpguppi_blade_capi.cpp \
 		hpguppi_blade_ata_structs.h \
-		hpguppi_blade_ata_mode.h \
 		hpguppi_blade_ata_mode_a_capi.cpp \
 		hpguppi_blade_ata_mode_a_capi.h \
 		hpguppi_blade_ata_mode_a_config.h \
@@ -77,7 +81,13 @@ hpguppi_blade_c_api_files = \
 		hpguppi_blade_ata_mode_h_config.h \
 		hpguppi_blade_ata_mode_b_capi.cpp \
 		hpguppi_blade_ata_mode_b_capi.h \
-		hpguppi_blade_ata_mode_b_config.h
+		hpguppi_blade_ata_mode_b_config.h \
+		hpguppi_blade_ata_mode_x_capi.cpp \
+		hpguppi_blade_ata_mode_x_capi.h \
+		hpguppi_blade_ata_mode_x_config.h \
+		hpguppi_blade_ata_mode_k_capi.cpp \
+		hpguppi_blade_ata_mode_k_capi.h \
+		hpguppi_blade_ata_mode_k_config.h
 
 noinst_LTLIBRARIES = libbladeapi.la
 libbladeapi_la_SOURCES = $(hpguppi_blade_c_api_files)

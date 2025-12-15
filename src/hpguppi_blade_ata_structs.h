@@ -2,7 +2,6 @@
 #define BLADE_ATA_STRUCTS_H
 
 struct blade_ata_input_dims{
-    uint32_t NBEAMS;
     uint32_t NANTS;
     uint32_t NCHANS;
     uint32_t NTIME;
